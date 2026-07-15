@@ -1,0 +1,23 @@
+[package]
+name = "glow-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Diagnostic: render egui through a hand-created desktop-OpenGL context"
+
+[[bin]]
+name = "glow-probe"
+path = "src/main.rs"
+
+[dependencies]
+egui = "0.31"
+egui_glow = { version = "0.31", features = ["winit"] }
+egui-winit = "0.31"
+glow = "0.16"
+glutin = "0.32"
+glutin-winit = "0.5"
+winit = "0.30"
+raw-window-handle = "0.6"
+
+# Intentionally does NOT set `[lints] workspace = true`: this crate hand-creates
+# an OpenGL context, which requires `unsafe`, while the workspace forbids it.
