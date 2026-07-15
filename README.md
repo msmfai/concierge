@@ -101,6 +101,9 @@ the store, so a mod used by two modlists downloads once. The full command set:
 
 ## Install
 
+Prebuilt CLI binaries for Linux, Windows, and macOS are on the
+[releases page](https://github.com/msmfai/concierge/releases).
+
 With Nix (all helper tools included):
 
 ```sh
