@@ -2,40 +2,39 @@
 
 First public release.
 
-Concierge is a **declarative mod manager**: your entire modded game lives in
-one `manifest.toml` — every mod, version, content hash, installer choice, and
-the load order. Concierge turns that file into a running game and can rebuild
-the identical setup from scratch, on any machine, at any time.
+Concierge is a mod manager with a white-glove twist: describe the playthrough
+you want to an AI assistant and it builds the modpack for you — finds the
+mods, answers the installer questions, sorts the load order, and
+health-checks the result. Everything it decides lands in one small pack file
+you can read, keep, and share, and your game's own files are never touched.
 
 ## Highlights
 
-- **Your game install is never touched.** Mods deploy into a disposable
-  copy-on-write *instance*; the original directory stays pristine, verifiably.
-- **One file is the whole truth.** Review it, diff it, version it, share it.
-  `preview` shows exactly what would deploy before anything moves.
-- **~45 games, one engine.** Bethesda titles, Baldur's Gate 3, KOTOR 1/2,
-  RimWorld, Stardew Valley, Minecraft, Valheim, Cyberpunk 2077, Elden Ring,
-  The Sims 4 and more — plus `generic`/`custom` modes that cover games with
-  no adapter at all.
-- **Installers as data.** FOMOD choices are recorded in the manifest
-  (`[mod.fomod] select = [...]`) and replayed exactly — no wizard clicking,
-  no mystery files.
-- **Safety rails.** Per-game invariant lints refuse deploys that would crash;
-  `doctor` gives one pass/fail health report; `launch --check` reads the
-  game's own logs to tell you what loaded and what didn't; everything is
-  cleanly reversible (`deactivate`, `undeploy`).
-- **Nexus integration.** Automatic downloads with a Premium key or a guided
-  flow without one; a locally-synced, searchable catalog; `audit` verifies
-  every declared mod id against it.
-- **Agent-ready.** Profiles ship a command guide and slash-commands for AI
-  agents, and `concierge shell` runs any agent inside an OS sandbox whose
-  write-boundary is derived from the plan.
-- **CLI + GUI.** Everything scriptable; the egui app adds a catalog browser,
-  preview/apply, generations, and an embedded sandboxed terminal.
+- **Your personal mod concierge** — bring the AI assistant you already use;
+  every pack ships with the instructions it needs, and it runs in a sandbox
+  that physically can't write outside the pack and the game copy it manages.
+- **Your game files stay untouched** — mods go into a separate copy of the
+  game; one command proves your install is pristine, one command removes
+  every trace.
+- **A pack you can keep** — back it up, share it, or rebuild the identical
+  game on another machine.
+- **Around 45 games** — Fallout 4, Skyrim, Baldur's Gate 3, Starfield,
+  Cyberpunk 2077, Elden Ring, Stardew Valley, RimWorld, Witcher 3, The Sims 4,
+  Valheim, KOTOR and more, plus a generic mode for games without dedicated
+  support.
+- **No installer wizard fatigue** — installer choices are answered once and
+  remembered forever.
+- **Crashes caught early** — automatic load-order sorting plus health checks
+  for missing requirements and broken combinations, before you launch.
+- **Nexus Mods built in** — automatic downloads with a Premium account or a
+  guided flow without one, and a searchable local catalog of every mod for
+  your game.
+- **App and command line** — a friendly app with a mod browser, previews, and
+  rollback; everything also scriptable.
 
 ## Downloads
 
-Prebuilt `concierge` CLI binaries are attached below:
+Prebuilt `concierge` binaries are attached below:
 
 | platform | file |
 |---|---|
@@ -44,13 +43,10 @@ Prebuilt `concierge` CLI binaries are attached below:
 | macOS Apple Silicon | `concierge-v0.1.0-aarch64-macos.tar.gz` |
 | macOS Intel | `concierge-v0.1.0-x86_64-macos.tar.gz` |
 
-Runtime needs `bsdtar` (preinstalled on macOS and Windows 10+;
-`libarchive-tools` on Linux). The GUI is source-built for now:
-`cargo run -p concierge-gui`.
+The app portion is source-built for now: `cargo run -p concierge-gui`.
 
 ## Maturity
 
-This is an early release. The most play-tested path is Fallout 4 (including
-macOS via CrossOver); the other adapters share the same engine but have seen
-less real-world use, and launch flows are strongest on macOS. Expect rough
-edges, and please file issues.
+This is an early release. Fallout 4 is the most play-tested game (including
+on a Mac via CrossOver); the others share the same engine but have seen less
+real-world use. Expect rough edges, and please file issues.
