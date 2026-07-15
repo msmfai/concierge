@@ -2133,7 +2133,7 @@ impl App {
                 ui.label(format!("cache: {n}, {}", human_bytes(bytes)));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .selectable_label(settings_open, "⚙")
+                        .selectable_label(settings_open, "Settings")
                         .on_hover_text("settings")
                         .clicked()
                     {
@@ -2141,14 +2141,14 @@ impl App {
                     }
                     self.render_kind(ui, concierge_ui::WidgetKind::Toggle);
                     if ui
-                        .selectable_label(dark, if dark { "🌙" } else { "☀" })
+                        .selectable_label(dark, if dark { "Dark" } else { "Light" })
                         .on_hover_text("toggle theme")
                         .clicked()
                     {
                         self.dark = !self.dark;
                     }
                     if ui
-                        .selectable_label(ai_visible, "🪄 AI")
+                        .selectable_label(ai_visible, "AI")
                         .on_hover_text("show/hide the AI assistant column")
                         .clicked()
                     {
@@ -2280,7 +2280,7 @@ impl App {
                     let running = self.term.as_ref().is_some_and(|t| !t.finished());
                     if self.term.is_none() {
                         ui.add_space(8.0);
-                        if ui.button("▶ Start agent session").clicked() {
+                        if ui.button("Start agent session").clicked() {
                             self.start_agent_terminal();
                         }
                         ui.add_space(6.0);
@@ -2459,27 +2459,36 @@ impl App {
                                 self.dispatch_intent(&format!("mod_toggle:{}", m.name));
                             }
                             let sel = self.selected.as_deref() == Some(&m.name);
-                            // Every mutation below routes through dispatch_intent — the
-                            // App is never mutated directly from the row (only drag
-                            // DETECTION stays here; its result dispatches mod_move).
-                            if can_reorder {
-                                let dnd =
-                                    ui.dnd_drag_source(egui::Id::new(("dragmod", i)), i, |ui| {
-                                        ui.selectable_label(sel, &m.name)
-                                    });
-                                // The drag source senses drags, not clicks — the
-                                // inner label's response carries the click.
-                                if dnd.inner.clicked() || dnd.response.clicked() {
-                                    self.dispatch_intent(&format!("mod_select:{}", m.name));
-                                }
-                                if let Some(from) = dnd.response.dnd_release_payload::<usize>() {
-                                    if *from != i {
-                                        self.dispatch_intent(&format!("mod_move:{from}:{i}"));
+                            // The name is ALWAYS a plain clickable label, so a click
+                            // always selects. Drag-to-reorder lives on a separate
+                            // handle: a clickable widget inside a drag source has its
+                            // clicks swallowed by the drag sense, which is why
+                            // clicking the name did nothing before. The ↑/↓ buttons
+                            // reorder as well, so the handle is a convenience.
+                            ui.horizontal(|ui| {
+                                if can_reorder {
+                                    let dnd = ui.dnd_drag_source(
+                                        egui::Id::new(("dragmod", i)),
+                                        i,
+                                        |ui| {
+                                            ui.add(
+                                                egui::Label::new(egui::RichText::new(":::").weak())
+                                                    .sense(egui::Sense::drag()),
+                                            )
+                                            .on_hover_text("drag to reorder");
+                                        },
+                                    );
+                                    if let Some(from) = dnd.response.dnd_release_payload::<usize>()
+                                    {
+                                        if *from != i {
+                                            self.dispatch_intent(&format!("mod_move:{from}:{i}"));
+                                        }
                                     }
                                 }
-                            } else if ui.selectable_label(sel, &m.name).clicked() {
-                                self.dispatch_intent(&format!("mod_select:{}", m.name));
-                            }
+                                if ui.selectable_label(sel, &m.name).clicked() {
+                                    self.dispatch_intent(&format!("mod_select:{}", m.name));
+                                }
+                            });
                             ui.label(&m.version);
                             ui.label(mod_source(m));
                             ui.horizontal(|ui| {
@@ -2708,7 +2717,7 @@ impl App {
             .iter()
             .find(|t| t.id == "check_account")
             .cloned();
-        egui::Window::new("⚙ Settings")
+        egui::Window::new("Settings")
             .open(&mut open)
             .resizable(true)
             .show(ctx, |ui| {
