@@ -331,6 +331,8 @@ struct App {
     error: Option<String>,
     /// A prominent green success banner from the last action (Apply/Check/…).
     notice: Option<String>,
+    /// In-app Nexus API-key entry (Settings), so users don't edit config files.
+    nexus_key_input: String,
     new_profile_name: String,
     search: String,
     selected: Option<String>,
@@ -445,6 +447,7 @@ impl App {
             rel_issues: Vec::new(),
             error: None,
             notice: None,
+            nexus_key_input: String::new(),
             new_profile_name: String::new(),
             search: String::new(),
             selected: None,
@@ -2916,6 +2919,32 @@ impl App {
                 if let Some(tr) = &check {
                     self.transition_button(ui, tr);
                 }
+                ui.separator();
+                ui.strong("Nexus Mods");
+                ui.label(
+                    "To download Nexus mods automatically, paste your personal API key —                      it's free: make a nexusmods.com account, then Account Settings → API                      Keys → Personal key. No key? You can still download a mod's file                      yourself and drop it in your Downloads folder, then Apply.",
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.nexus_key_input)
+                            .password(true)
+                            .hint_text("paste Nexus API key"),
+                    );
+                    if ui.button("Save key").clicked() {
+                        let k = self.nexus_key_input.trim().to_owned();
+                        if !k.is_empty() {
+                            let dir = concierge_platform::config_dir();
+                            let _ = std::fs::create_dir_all(&dir);
+                            match std::fs::write(dir.join("nexus-api-key"), &k) {
+                                Ok(()) => {
+                                    self.notice = Some("Nexus API key saved — you can download mods now.".to_owned());
+                                    self.nexus_key_input.clear();
+                                }
+                                Err(e) => self.error = Some(format!("couldn't save key: {e}")),
+                            }
+                        }
+                    }
+                });
                 ui.separator();
                 ui.strong("preferences");
                 ui.checkbox(&mut self.dark, "dark theme");
