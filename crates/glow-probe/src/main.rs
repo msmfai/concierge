@@ -1,24 +1,22 @@
-//! Diagnostic: render a trivial egui UI through a **desktop OpenGL** context
-//! created by hand. eframe's glow path requests a GLES-over-WGL context, which
-//! CrossOver/Wine's WGL rejects; a desktop-GL context (CrossOver exposes Apple
-//! GL up to 4.1) composites the traditional way, bypassing MoltenVK entirely.
-//! If this window shows its text under Wine while the wgpu build stays blank,
-//! the fix is to render the real app through desktop GL too.
+//! Diagnostic: render a trivial egui UI, trying the rendering path eframe won't
+//! expose. eframe's glow path uses a GLES-over-WGL context (Wine's WGL rejects
+//! it) and its wgpu path doesn't composite egui draws under CrossOver/MoltenVK.
+//! wgpu's GL backend, however, reached a context via **EGL** — so this probe
+//! forces glutin onto EGL and tries GLES, the one untried path. If its text
+//! shows under Wine, the app can render the same way.
 
+use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use egui_glow::glow;
-use glutin::config::ConfigTemplateBuilder;
+use glutin::config::{ConfigTemplateBuilder, GlConfig};
 use glutin::context::{
-    ContextApi, ContextAttributesBuilder, GlProfile, NotCurrentGlContext, PossiblyCurrentContext,
-    Version,
+    ContextApi, ContextAttributesBuilder, NotCurrentGlContext, PossiblyCurrentContext, Version,
 };
-use glutin::display::GetGlDisplay;
-use glutin::prelude::GlDisplay;
+use glutin::display::{Display, DisplayApiPreference, GlDisplay};
 use glutin::surface::{GlSurface, Surface, SwapInterval, WindowSurface};
-use glutin_winit::{DisplayBuilder, GlWindow};
-use raw_window_handle::HasWindowHandle;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -33,44 +31,82 @@ struct App {
     ctx: egui::Context,
 }
 
+#[allow(clippy::expect_used, clippy::too_many_lines)]
 impl ApplicationHandler for App {
-    #[allow(clippy::expect_used)]
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.win.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("Concierge");
-        let template = ConfigTemplateBuilder::new().with_alpha_size(8);
-        let (window, gl_config) = DisplayBuilder::new()
-            .with_window_attributes(Some(attrs))
-            .build(el, template, |configs| configs.into_iter().next().unwrap())
-            .expect("display build");
-        let window = window.expect("window");
-        let rwh = window.window_handle().expect("rwh").as_raw();
-        let display = gl_config.display();
+        let window = el
+            .create_window(Window::default_attributes().with_title("Concierge"))
+            .expect("window");
+        let raw_win = window.window_handle().expect("rwh").as_raw();
+        let raw_disp = window.display_handle().expect("dh").as_raw();
 
-        // The whole point: request DESKTOP OpenGL 3.3 core, never GLES.
-        let ctx_attrs = ContextAttributesBuilder::new()
-            .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
-            .with_profile(GlProfile::Core)
-            .build(Some(rwh));
-        let not_current =
-            unsafe { display.create_context(&gl_config, &ctx_attrs) }.unwrap_or_else(|e| {
-                eprintln!("desktop GL 3.3 core failed: {e}; retrying with default attrs");
-                let fallback = ContextAttributesBuilder::new().build(Some(rwh));
-                unsafe { display.create_context(&gl_config, &fallback) }.expect("no GL context")
-            });
+        // Force EGL on Windows. WGL context creation returns OS error 8341
+        // under this CrossOver; wgpu's GL backend reached a context via EGL.
+        #[cfg(target_os = "windows")]
+        let display = unsafe { Display::new(raw_disp, DisplayApiPreference::Egl) }
+            .inspect_err(|e| eprintln!("EGL display unavailable: {e}"))
+            .or_else(|_| unsafe {
+                Display::new(raw_disp, DisplayApiPreference::WglThenEgl(Some(raw_win)))
+            })
+            .expect("no gl display");
+        #[cfg(not(target_os = "windows"))]
+        let display =
+            unsafe { Display::new(raw_disp, DisplayApiPreference::Cgl) }.expect("no gl display");
+        eprintln!("display created");
 
-        let surface_attrs = window
-            .build_surface_attributes(<_>::default())
-            .expect("surface attrs");
-        let surface = unsafe { display.create_window_surface(&gl_config, &surface_attrs) }
-            .expect("gl surface");
+        let template = ConfigTemplateBuilder::new()
+            .with_alpha_size(8)
+            .compatible_with_native_window(raw_win)
+            .build();
+        let config = unsafe { display.find_configs(template) }
+            .expect("find_configs")
+            .reduce(|a, b| {
+                if b.num_samples() < a.num_samples() {
+                    b
+                } else {
+                    a
+                }
+            })
+            .expect("a gl config");
+        eprintln!("config chosen");
+
+        // Try GLES 3.0, GLES 2.0, then desktop GL — whatever this stack gives.
+        let mk = |api| {
+            ContextAttributesBuilder::new()
+                .with_context_api(api)
+                .build(Some(raw_win))
+        };
+        let not_current = unsafe {
+            display
+                .create_context(&config, &mk(ContextApi::Gles(Some(Version::new(3, 0)))))
+                .or_else(|e| {
+                    eprintln!("GLES 3.0 failed: {e}");
+                    display.create_context(&config, &mk(ContextApi::Gles(Some(Version::new(2, 0)))))
+                })
+                .or_else(|e| {
+                    eprintln!("GLES 2.0 failed: {e}");
+                    display.create_context(&config, &mk(ContextApi::OpenGl(None)))
+                })
+                .expect("no gl context")
+        };
+        eprintln!("context created");
+
+        let attrs = glutin::surface::SurfaceAttributesBuilder::<WindowSurface>::new().build(
+            raw_win,
+            NonZeroU32::new(800).unwrap(),
+            NonZeroU32::new(600).unwrap(),
+        );
+        let surface = unsafe { display.create_window_surface(&config, &attrs) }.expect("surface");
         let gl_ctx = not_current.make_current(&surface).expect("make current");
         let _ = surface.set_swap_interval(&gl_ctx, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
 
         let gl = unsafe {
-            glow::Context::from_loader_function_cstr(|s| display.get_proc_address(s).cast())
+            glow::Context::from_loader_function(|s| {
+                display.get_proc_address(&CString::new(s).unwrap()).cast()
+            })
         };
         {
             use glow::HasContext as _;
@@ -95,7 +131,6 @@ impl ApplicationHandler for App {
         self.state = Some(state);
     }
 
-    #[allow(clippy::expect_used)]
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let (Some(window), Some(surface), Some(gl_ctx), Some(painter), Some(state)) = (
             self.win.as_ref(),
@@ -113,8 +148,8 @@ impl ApplicationHandler for App {
                 let raw_input = state.take_egui_input(window);
                 let out = self.ctx.run(raw_input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        ui.heading("Concierge glow (desktop GL) probe");
-                        ui.label("If you can read this, egui renders over OpenGL under Wine.");
+                        ui.heading("Concierge glow (EGL/GLES) probe");
+                        ui.label("If you can read this, egui renders via EGL under Wine.");
                     });
                 });
                 state.handle_platform_output(window, out.platform_output);
