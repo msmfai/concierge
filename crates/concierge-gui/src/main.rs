@@ -135,20 +135,29 @@ fn graphics_backends() -> eframe::wgpu::Backends {
     if cfg!(target_os = "macos") {
         Backends::METAL
     } else if cfg!(target_os = "windows") {
-        // Probe for a Vulkan adapter with a throwaway instance; prefer Vulkan
-        // when present, fall back to DX12 only when it is genuinely unavailable.
-        let probe = eframe::wgpu::Instance::new(&eframe::wgpu::InstanceDescriptor {
-            backends: Backends::VULKAN,
-            ..Default::default()
-        });
-        if probe.enumerate_adapters(Backends::VULKAN).is_empty() {
-            Backends::DX12
-        } else {
+        // Use Vulkan when its loader is installed, else DX12. Detection is a
+        // file check, NOT a wgpu probe: creating a throwaway Vulkan instance
+        // before eframe's corrupts the real one under winevulkan/MoltenVK and
+        // blanks the window.
+        if windows_has_vulkan_loader() {
             Backends::VULKAN
+        } else {
+            Backends::DX12
         }
     } else {
         Backends::VULKAN | Backends::GL
     }
+}
+
+/// Whether the Vulkan ICD loader (`vulkan-1.dll`) is installed. It ships with
+/// any Vulkan-capable Windows GPU driver and with Wine's winevulkan, so its
+/// presence is a reliable, side-effect-free signal that Vulkan is usable.
+fn windows_has_vulkan_loader() -> bool {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    std::path::Path::new(&root)
+        .join("System32")
+        .join("vulkan-1.dll")
+        .exists()
 }
 
 fn main() -> eframe::Result {
