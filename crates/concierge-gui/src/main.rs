@@ -363,6 +363,9 @@ struct App {
     browse_query: String,
     nxm_input: String,
     nexus_account: Arc<std::sync::Mutex<String>>,
+    /// Live catalog-sync progress (Some while a sync runs) — shown in Browse so
+    /// it doesn't look frozen.
+    sync_progress: Arc<std::sync::Mutex<Option<String>>>,
     browse_hits: Vec<CatalogHit>,
     browse_msg: String,
     /// First-class category filter: None = all categories.
@@ -473,6 +476,7 @@ impl App {
             browse_query: String::new(),
             nxm_input: String::new(),
             nexus_account: Arc::new(std::sync::Mutex::new(String::new())),
+            sync_progress: Arc::new(std::sync::Mutex::new(None)),
             browse_hits: Vec::new(),
             browse_msg: String::new(),
             browse_category: None,
@@ -1890,6 +1894,9 @@ impl eframe::App for App {
             self.handle_nxm(&url);
         }
         let mut new_log = Vec::new();
+        if self.sync_progress.lock().is_ok_and(|g| g.is_some()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
         while let Ok((ok, msg)) = self.flash_rx.try_recv() {
             if ok {
                 self.notice = Some(msg);
@@ -3031,6 +3038,7 @@ impl App {
             .as_ref()
             .and_then(|p| p.game.nexus_domain.clone())
             .map(|d| (d, self.browse_status));
+        let syncing = self.sync_progress.lock().ok().and_then(|g| g.clone());
         egui::Window::new("Browse mods (Nexus catalog)")
             .open(&mut open)
             .default_width(560.0)
@@ -3039,19 +3047,25 @@ impl App {
             .show(ctx, |ui| {
                 // Catalog sync affordance — fixes the dead-end "is the catalog
                 // synced?" by saying so and offering the fix in place.
-                if let Some((d, (rows_n, synced))) = &status {
+                if let Some(msg) = &syncing {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(msg);
+                    });
+                    ui.separator();
+                } else if let Some((d, (rows_n, synced))) = &status {
                     ui.horizontal(|ui| {
                         if *rows_n == 0 {
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 170, 90),
-                                format!("catalog for {d}: never synced"),
+                                format!("catalog for {d}: not downloaded yet — click Sync"),
                             );
                         } else {
                             ui.weak(format!("catalog: {rows_n} mods, synced {}", ago(*synced)));
                         }
                         if ui
                             .button("⟳ Sync now")
-                            .on_hover_text("concierge db sync — fetches the public Nexus catalog")
+                            .on_hover_text("download the public Nexus mod list for this game")
                             .clicked()
                         {
                             self.sync_catalog(d.clone());
@@ -3328,11 +3342,25 @@ impl App {
             Arc::clone(&self.busy),
             Arc::clone(&self.browse_refresh),
         );
+        let prog = Arc::clone(&self.sync_progress);
+        fn set_prog(g: &Arc<std::sync::Mutex<Option<String>>>, v: Option<String>) {
+            if let Ok(mut lock) = g.lock() {
+                *lock = v;
+            }
+        }
+        set_prog(
+            &prog,
+            Some("Downloading the mod list… (one-time, can take a couple of minutes)".to_owned()),
+        );
         std::thread::spawn(move || {
             let _ = tx.send(format!("> syncing {domain} catalog…"));
             match concierge_db::catalog::Catalog::open(&repo.catalog_path()) {
                 Ok(mut cat) => match concierge_db::sync::sync_game(&mut cat, &domain, &mut |l| {
                     let _ = tx.send(l.to_owned());
+                    set_prog(
+                        &prog,
+                        Some(format!("Downloading the mod list… {}", l.trim())),
+                    );
                 }) {
                     Ok(r) => {
                         let _ = tx.send(format!("catalog synced: {} rows", r.rows_synced));
@@ -3346,6 +3374,7 @@ impl App {
                     let _ = tx.send(format!("catalog open failed: {e}"));
                 }
             }
+            set_prog(&prog, None);
             busy.store(false, Ordering::SeqCst);
         });
     }
