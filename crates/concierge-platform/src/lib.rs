@@ -247,6 +247,34 @@ pub fn home_dir() -> PathBuf {
         .map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
+/// The per-user config directory, `$XDG_CONFIG_HOME/concierge` or
+/// `~/.config/concierge`. Where API keys live.
+#[must_use]
+pub fn config_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map_or_else(|| home_dir().join(".config"), PathBuf::from)
+        .join("concierge")
+}
+
+/// Path to a named config file under [`config_dir`]. If it isn't there yet but a
+/// legacy `~/.config/fo4nix/<name>` exists, return the legacy path so existing
+/// keys keep working after the rename.
+#[must_use]
+pub fn config_file(name: &str) -> PathBuf {
+    let current = config_dir().join(name);
+    if current.exists() {
+        return current;
+    }
+    let legacy = std::env::var_os("XDG_CONFIG_HOME")
+        .map_or_else(|| home_dir().join(".config"), PathBuf::from)
+        .join("fo4nix")
+        .join(name);
+    if legacy.exists() {
+        return legacy;
+    }
+    current
+}
+
 /// The per-user data directory for this OS (`%LOCALAPPDATA%`, macOS
 /// `~/Library/Application Support`, or XDG `~/.local/share`).
 #[must_use]
@@ -299,6 +327,32 @@ mod tests {
             assert!(h.is_absolute());
             assert_ne!(h, std::path::Path::new("/"));
         }
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn config_file_prefers_concierge_then_falls_back_to_fo4nix() {
+        use super::config_file;
+        // Isolate HOME/XDG so we don't touch the real config.
+        let tmp = std::env::temp_dir().join(format!("cg-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let prev_x = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", &tmp);
+        // neither exists -> returns the concierge path
+        assert!(config_file("k").ends_with("concierge/k"));
+        // only legacy fo4nix exists -> returns legacy
+        std::fs::create_dir_all(tmp.join("fo4nix")).unwrap();
+        std::fs::write(tmp.join("fo4nix/k"), "x").unwrap();
+        assert!(config_file("k").ends_with("fo4nix/k"));
+        // once concierge has it, prefer concierge
+        std::fs::create_dir_all(tmp.join("concierge")).unwrap();
+        std::fs::write(tmp.join("concierge/k"), "y").unwrap();
+        assert!(config_file("k").ends_with("concierge/k"));
+        match prev_x {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]

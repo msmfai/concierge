@@ -231,7 +231,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("cc-steam-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let steam_dir = root.join("steamapps/common/Fallout 4");
-        let instance = root.join("fo4nix/game");
+        let instance = root.join("concierge/game");
         std::fs::create_dir_all(&instance).unwrap();
         std::fs::write(instance.join("Fallout4.exe"), b"MODDED").unwrap();
         // a real pristine dir with its own marker

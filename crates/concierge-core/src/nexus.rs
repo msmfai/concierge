@@ -15,7 +15,7 @@ pub fn api_key() -> Result<String> {
             return Ok(k);
         }
     }
-    let path = home().join(".config/fo4nix/nexus-api-key");
+    let path = concierge_platform::config_file("nexus-api-key");
     match std::fs::read_to_string(&path) {
         Ok(k) if !k.trim().is_empty() => Ok(k.trim().to_owned()),
         _ => Err(Error::NoApiKey),
