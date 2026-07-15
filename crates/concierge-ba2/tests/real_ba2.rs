@@ -54,7 +54,7 @@ fn gnrl_extracts_real_files_with_correct_signatures() {
                 signature_ok(&ext, &out),
                 "{} ({ext}) had wrong signature: {:02X?}",
                 entry.name,
-                &out.get(..8)
+                out.get(..8)
             );
             if ext == "dds" {
                 checked_dds = true;
