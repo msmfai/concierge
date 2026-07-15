@@ -123,13 +123,25 @@ fn main() -> eframe::Result {
             let _ = concierge::nexus::append_nxm_inbox(&arg);
         }
     }
-    // Use the wgpu backend (DirectX 12 on Windows, Metal on macOS, Vulkan on
-    // Linux). The default glow/OpenGL path fails to create a context on Windows
-    // setups without the WGL ES-context extension (older Intel drivers, VMs,
-    // remote desktop, Wine); wgpu targets the platform's native graphics API
-    // and is the robust choice for shipping across varied GPUs.
+    // Render with wgpu, targeting each platform's native graphics API — DirectX
+    // 12 on Windows, Metal on macOS, Vulkan on Linux. The default glow/OpenGL
+    // path fails on setups without a modern WGL/GL context (older Intel
+    // drivers, VMs, remote desktop, Wine), so it isn't a reliable default.
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    // Restrict to the primary backends (Vulkan / Metal / DX12) and drop OpenGL:
+    // wgpu's GL fallback lands on ancient contexts under translation layers
+    // (e.g. GL 2.1 under Wine) and renders a blank window. With GL out, Windows
+    // uses DX12 natively and falls back to Vulkan where DX12 has no surface.
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
+        setup.instance_descriptor.backends = eframe::wgpu::Backends::PRIMARY;
+    }
+    // Fifo (plain vsync) is the most broadly supported present mode; the default
+    // AutoVsync can negotiate a swapchain that reports perpetually "suboptimal"
+    // through Vulkan translation layers and never composites the rendered frame.
+    wgpu_options.present_mode = eframe::wgpu::PresentMode::Fifo;
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options,
         ..Default::default()
     };
     eframe::run_native(
