@@ -218,6 +218,17 @@ fn main() -> eframe::Result {
         viewport,
         ..Default::default()
     };
+    // Diagnostic: CONCIERGE_MINIMAL=1 runs a trivial one-label window with the
+    // SAME wgpu setup, to distinguish a Concierge-specific rendering problem
+    // from an eframe/wgpu/translation-layer stack problem.
+    if std::env::var_os("CONCIERGE_MINIMAL").is_some() {
+        return eframe::run_simple_native("Concierge", native_options, |ctx, _frame| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                ui.heading("Concierge minimal render test");
+                ui.label("If you can read this, wgpu is compositing.");
+            });
+        });
+    }
     eframe::run_native(
         "Concierge",
         native_options,
