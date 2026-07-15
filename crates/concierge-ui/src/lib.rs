@@ -473,8 +473,8 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
     let busy = f.busy;
     let guard_busy = busy.then_some(BUSY);
     let mut v = vec![
-        hv(t(Intent::Download, "⬇ Download", !busy, guard_busy), "download the mods your setup needs (queues manual downloads for free accounts)"),
-        hv(t(Intent::Apply, "⟳ Apply", !busy, guard_busy), "install your Setup into the game — backs up saves, then downloads, builds, and deploys"),
+        hv(t(Intent::Download, "Download", !busy, guard_busy), "download the mods your setup needs (queues manual downloads for free accounts)"),
+        hv(t(Intent::Apply, "Apply", !busy, guard_busy), "install your Setup into the game — backs up saves, then downloads, builds, and deploys"),
         hv(t(Intent::Verify, "Verify", !busy, guard_busy), "check the game still matches your Setup"),
     ];
     if f.is_bethesda {
@@ -489,18 +489,18 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         v.push(hv(
             t(
                 Intent::SortLoad,
-                format!("⇅ {}", f.sort_label),
+                f.sort_label.clone(),
                 edit_ok,
                 sort_guard,
             ),
             "auto-sort the load order (LOOT) and record it",
         ));
         v.push(hv(
-            t(Intent::Requirements, "🔗 Requirements", edit_ok, sort_guard),
+            t(Intent::Requirements, "Requirements", edit_ok, sort_guard),
             "find what each mod needs (masters/frameworks) and flag anything missing",
         ));
         v.push(hv(
-            t(Intent::FindPatches, "🩹 Find patches", !busy, guard_busy),
+            t(Intent::FindPatches, "Find patches", !busy, guard_busy),
             "find compatibility patches for conflicting mods",
         ));
         v.push(hv(
@@ -513,7 +513,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         ));
     }
     v.push(hv(
-        t(Intent::Play, "▶ Play", !busy, guard_busy),
+        t(Intent::Play, "Play", !busy, guard_busy),
         "launch the game",
     ));
     v.push(hv(
@@ -524,11 +524,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         "remove the installed mods from the game (leaves your Setup intact)",
     ));
     // the lock Toggle shows the current mode and is "selected" when Locked.
-    let lock_label = if f.mutable {
-        "🔓 Edit"
-    } else {
-        "🔒 Locked"
-    };
+    let lock_label = if f.mutable { "Edit" } else { "Locked" };
     v.push(hv(
         toggle(Intent::ToggleLock, lock_label, !f.mutable),
         "Locked mods can't be changed — switch to Edit to modify your setup",
@@ -540,12 +536,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
     } else {
         None
     };
-    v.push(t(
-        Intent::Undo,
-        "↶ undo",
-        f.mutable && f.has_undo,
-        undo_guard,
-    ));
+    v.push(t(Intent::Undo, "undo", f.mutable && f.has_undo, undo_guard));
     // add-mod form (rendered in the Setup tab header, not the action bar row).
     let add_label = if f.add_open {
         "− add mod"
@@ -578,7 +569,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         v.push(t(Intent::AiSend, "send", f.ai_can_send, send_guard));
         v.push(t(
             Intent::AiWork,
-            "🧤 Work on this profile",
+            "Work on this profile",
             f.ai_can_send,
             send_guard,
         ));
@@ -589,7 +580,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
     // top bar: rescan, delete/create profile, per-game/profile select.
     v.push(t(Intent::Rescan, "rescan", true, None));
     if !f.profiles.is_empty() {
-        v.push(t(Intent::DeleteProfile, "🗑 delete profile", true, None));
+        v.push(t(Intent::DeleteProfile, "delete profile", true, None));
     }
     let named = !f.new_profile.trim().is_empty();
     let name_guard = (!named).then_some("name the profile first");
@@ -597,7 +588,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
     v.push(t(Intent::CreateClone, "clone active", named, name_guard));
     v.push(t(
         Intent::NewModpackAi,
-        "🪄 new modpack (AI)",
+        "new modpack (AI)",
         named && !f.ai_busy,
         if f.ai_busy { Some(BUSY) } else { name_guard },
     ));
@@ -633,11 +624,11 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         ));
     }
     v.push(to(
-        t(Intent::OpenSettings, "⚙ Settings", true, None),
+        t(Intent::OpenSettings, "Settings", true, None),
         "Settings",
     ));
     v.push(to(
-        t(Intent::OpenPreview, "👁 Preview", true, None),
+        t(Intent::OpenPreview, "Preview", true, None),
         "PreviewChanges",
     ));
     if f.has_catalog {
@@ -656,7 +647,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         "the mods you want — your editable plan",
     ));
     v.push(hv(
-        tab(Intent::SelectInstalledTab, "📦 Installed", !setup),
+        tab(Intent::SelectInstalledTab, "Installed", !setup),
         "what's actually deployed to the game right now — read-only",
     ));
     v
