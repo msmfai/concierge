@@ -32,7 +32,6 @@ members = [
     "crates/concierge-override",
     "crates/concierge-gui",
     "crates/concierge-ui",
-    "crates/glow-probe",
 ]
 
 [workspace.package]
