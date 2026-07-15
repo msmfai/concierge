@@ -45,7 +45,7 @@ fn request_body_is_well_formed_offline() {
         .as_str()
         .unwrap()
         .contains("Rule of Least Power"));
-    assert!(body["tools"].as_array().unwrap().len() == 5);
+    assert_eq!(body["tools"].as_array().unwrap().len(), 5);
     assert_eq!(body["messages"][0]["role"], "user");
     assert!(body["max_tokens"].as_u64().unwrap() > 0);
 }

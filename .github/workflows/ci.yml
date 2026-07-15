@@ -20,8 +20,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned so CI reproduces exactly what's verified locally (deny-all
+      # clippy would otherwise break on every new stable's lints); bump
+      # deliberately.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.96.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       # bsdtar drives archive extraction; preinstalled on macOS, package on Linux
