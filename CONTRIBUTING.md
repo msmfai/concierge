@@ -1,7 +1,12 @@
 # Contributing to Concierge
 
-Thanks for your interest. Concierge is young — issues, small fixes, and game
-adapters are all welcome.
+We're committed to an open development process and appreciate every
+contribution — bug fixes, new game support, documentation improvements, or
+just spreading the word. Concierge is a young project, which means small
+contributions land fast and make a visible difference.
+
+Not sure where to start? [Open an issue](https://github.com/msmfai/concierge/issues/new)
+and tell us what you'd like to do.
 
 ## Building
 
