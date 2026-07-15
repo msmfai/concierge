@@ -123,8 +123,33 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Concierge",
         eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(App::new()))),
+        Box::new(|cc| {
+            install_fonts(&cc.egui_ctx);
+            Ok(Box::new(App::new()))
+        }),
     )
+}
+
+/// egui's built-in fonts cover only a small emoji subset; anything outside it
+/// renders as a missing-glyph box. Append Noto Emoji (monochrome) as the last
+/// fallback for both font families so every icon in the UI has a glyph.
+fn install_fonts(ctx: &eframe::egui::Context) {
+    use eframe::egui::{FontData, FontDefinitions, FontFamily};
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "noto-emoji".to_owned(),
+        std::sync::Arc::new(FontData::from_static(include_bytes!(
+            "../assets/NotoEmoji-Regular.ttf"
+        ))),
+    );
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("noto-emoji".to_owned());
+    }
+    ctx.set_fonts(fonts);
 }
 
 /// A collected, deferred mutation — applied after the frame so the render pass
@@ -2440,9 +2465,11 @@ impl App {
                             if can_reorder {
                                 let dnd =
                                     ui.dnd_drag_source(egui::Id::new(("dragmod", i)), i, |ui| {
-                                        let _ = ui.selectable_label(sel, &m.name);
+                                        ui.selectable_label(sel, &m.name)
                                     });
-                                if dnd.response.clicked() {
+                                // The drag source senses drags, not clicks — the
+                                // inner label's response carries the click.
+                                if dnd.inner.clicked() || dnd.response.clicked() {
                                     self.dispatch_intent(&format!("mod_select:{}", m.name));
                                 }
                                 if let Some(from) = dnd.response.dnd_release_payload::<usize>() {
@@ -3354,7 +3381,7 @@ impl App {
         ui.strong("details");
         ui.separator();
         let Some(name) = &self.selected else {
-            ui.label("select a mod");
+            ui.label("click a mod's name in the list to see its details");
             return;
         };
         let Some(m) = mods.iter().find(|m| &m.name == name) else {
