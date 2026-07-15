@@ -1836,6 +1836,13 @@ fn human_bytes(n: u64) -> String {
 impl eframe::App for App {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         use eframe::egui;
+        // Repaint continuously rather than only on input. egui is reactive by
+        // default, which under a Vulkan translation layer (CrossOver/Wine's
+        // MoltenVK) can leave the first rendered frame un-composited with no
+        // further frames to correct it — the window shows only its clear colour.
+        // A steady ~60 fps keeps presenting until the surface composites, and is
+        // negligible on native platforms.
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
         // nxm handoff: pin any links dropped in the inbox (browser download /
         // `concierge nxm <url>` reaching this running instance).
         for url in concierge::nexus::drain_nxm_inbox() {
