@@ -122,6 +122,35 @@ fn preferred_adapter(backends: &[eframe::wgpu::Backend]) -> Option<usize> {
     (!backends.is_empty()).then_some(0)
 }
 
+/// The wgpu backend set to enable, per platform. This fixes the surface type,
+/// so the choice must be the backend that actually composites on screen.
+/// - macOS: Metal.
+/// - Windows: Vulkan when a Vulkan adapter exists (it composites under
+///   CrossOver/Wine, where DX12 draws a blank window, and is present on
+///   essentially all modern Windows GPUs), otherwise DX12. Override with
+///   `WGPU_BACKEND=dx12`.
+/// - Other (Linux): Vulkan plus GL as a fallback.
+fn graphics_backends() -> eframe::wgpu::Backends {
+    use eframe::wgpu::Backends;
+    if cfg!(target_os = "macos") {
+        Backends::METAL
+    } else if cfg!(target_os = "windows") {
+        // Probe for a Vulkan adapter with a throwaway instance; prefer Vulkan
+        // when present, fall back to DX12 only when it is genuinely unavailable.
+        let probe = eframe::wgpu::Instance::new(&eframe::wgpu::InstanceDescriptor {
+            backends: Backends::VULKAN,
+            ..Default::default()
+        });
+        if probe.enumerate_adapters(Backends::VULKAN).is_empty() {
+            Backends::DX12
+        } else {
+            Backends::VULKAN
+        }
+    } else {
+        Backends::VULKAN | Backends::GL
+    }
+}
+
 fn main() -> eframe::Result {
     // Surfaces wgpu/winit diagnostics when RUST_LOG is set (e.g.
     // RUST_LOG=wgpu_core=info,wgpu_hal=info); silent otherwise.
@@ -139,21 +168,18 @@ fn main() -> eframe::Result {
             let _ = concierge::nexus::append_nxm_inbox(&arg);
         }
     }
-    // Render with wgpu, targeting each platform's native graphics API — DirectX
-    // 12 on Windows, Metal on macOS, Vulkan on Linux. The default glow/OpenGL
-    // path fails on setups without a modern WGL/GL context (older Intel
-    // drivers, VMs, remote desktop, Wine), so it isn't a reliable default.
+    // Render with wgpu, targeting each platform's native graphics API. The
+    // default glow/OpenGL path fails on setups without a modern WGL/GL context
+    // (older Intel drivers, VMs, remote desktop, Wine), so it isn't a reliable
+    // default. The chosen backend fixes the *surface* type, which must match the
+    // renderer that composites: under CrossOver/Wine only Vulkan (via MoltenVK)
+    // composites — DX12 (via D3DMetal) draws to a window that stays blank.
+    let backends = graphics_backends();
     let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
-    // Restrict to the primary backends (Vulkan / Metal / DX12) and drop OpenGL:
-    // wgpu's GL fallback lands on ancient contexts under translation layers
-    // (e.g. GL 2.1 under Wine) and renders a blank window. With GL out, Windows
-    // uses DX12 natively and falls back to Vulkan where DX12 has no surface.
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
-        setup.instance_descriptor.backends = eframe::wgpu::Backends::PRIMARY;
-        // Prefer the Vulkan adapter. Under CrossOver/Wine the DX12 (D3DMetal)
-        // path composites a blank window for this app while Vulkan (via
-        // MoltenVK) renders correctly; Vulkan is also fine on native Windows and
-        // Linux, and macOS has no Vulkan adapter so it falls through to Metal.
+        setup.instance_descriptor.backends = backends;
+        // When more than one backend is enabled (Linux: Vulkan+GL), prefer the
+        // Vulkan adapter among those the surface supports.
         setup.native_adapter_selector = Some(std::sync::Arc::new(|adapters, _surface| {
             let order: Vec<eframe::wgpu::Backend> =
                 adapters.iter().map(|a| a.get_info().backend).collect();
