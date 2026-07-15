@@ -1,40 +1,33 @@
 # Concierge v0.1.0
 
-First public release.
+> [!WARNING]
+> **Alpha release.** This is a tool I made for myself I thought others may
+> benefit from. Please note docs are AI generated for now.
 
-Concierge is a mod manager with a white-glove twist: describe the playthrough
-you want to an AI assistant and it builds the modpack for you — finds the
-mods, answers the installer questions, sorts the load order, and
-health-checks the result. Everything it decides lands in one small pack file
-you can read, keep, and share, and your game's own files are never touched.
+Concierge is a mod manager. Your mod list lives in a text file; Concierge
+downloads the mods, verifies them, installs them into a separate copy of the
+game, sorts the load order, and launches. The original game install is never
+modified. It can be driven by hand or by an AI assistant running in a sandbox
+that can only write where the pack allows.
 
-## Highlights
+## In this release
 
-- **Your personal mod concierge** — bring the AI assistant you already use;
-  every pack ships with the instructions it needs, and it runs in a sandbox
-  that physically can't write outside the pack and the game copy it manages.
-- **Your game files stay untouched** — mods go into a separate copy of the
-  game; one command proves your install is pristine, one command removes
-  every trace.
-- **A pack you can keep** — back it up, share it, or rebuild the identical
-  game on another machine.
-- **Around 45 games** — Fallout 4, Skyrim, Baldur's Gate 3, Starfield,
-  Cyberpunk 2077, Elden Ring, Stardew Valley, RimWorld, Witcher 3, The Sims 4,
-  Valheim, KOTOR and more, plus a generic mode for games without dedicated
-  support.
-- **No installer wizard fatigue** — installer choices are answered once and
-  remembered forever.
-- **Crashes caught early** — automatic load-order sorting plus health checks
-  for missing requirements and broken combinations, before you launch.
-- **Nexus Mods built in** — automatic downloads with a Premium account or a
-  guided flow without one, and a searchable local catalog of every mod for
-  your game.
-- **App and command line** — a friendly app with a mod browser, previews, and
-  rollback; everything also scriptable.
+- About 45 supported games; Fallout 4 is the most tested (including on macOS
+  via CrossOver), the rest have seen less use.
+- Nexus Mods downloads (automatic with a Premium key, guided without),
+  checksum verification, and a searchable local mod catalog.
+- FOMOD installer choices stored in the pack file and replayed on install.
+- LOOT-based load-order sorting; health checks for missing dependencies,
+  plugin limits, on-disk drift, and pristine-install verification; `preview`
+  before any install.
+- Multiple packs per game with shared downloads; rollback to earlier states;
+  `undeploy` removes everything.
+- Agent operation: per-pack assistant instructions and a sandboxed
+  `concierge shell`.
+- CLI plus an egui GUI (mod browser, preview/apply, rollback). The GUI is
+  source-built for now: `cargo run -p concierge-gui`.
 
 ## Downloads
-
-Prebuilt `concierge` binaries are attached below:
 
 | platform | file |
 |---|---|
@@ -43,10 +36,13 @@ Prebuilt `concierge` binaries are attached below:
 | macOS Apple Silicon | `concierge-v0.1.0-aarch64-macos.tar.gz` |
 | macOS Intel | `concierge-v0.1.0-x86_64-macos.tar.gz` |
 
-The app portion is source-built for now: `cargo run -p concierge-gui`.
+Runtime dependency: `bsdtar` (preinstalled on macOS and Windows 10+;
+`libarchive-tools` on Linux).
 
-## Maturity
+## Known limitations
 
-This is an early release. Fallout 4 is the most play-tested game (including
-on a Mac via CrossOver); the others share the same engine but have seen less
-real-world use. Expect rough edges, and please file issues.
+- Windows and Linux launch flows are less developed than macOS.
+- Some GUI views (sorting, conflicts, load order) only appear for Bethesda
+  games.
+- Unusual FOMOD installers may need choices written into the pack file by
+  hand.
