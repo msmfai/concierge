@@ -252,6 +252,7 @@ pub fn set_locked(profile_dir: &Path, locked: bool) -> Result<()> {
 /// atomically) ignores it — on macOS the user-immutable flag closes that
 /// hole. Best-effort: absent on other platforms, where the sandbox deny and
 /// the `write_manifest` chokepoint still hold.
+#[allow(clippy::missing_const_for_fn)] // non-const on macOS (spawns chflags)
 fn set_immutable_flag(path: &Path, on: bool) {
     #[cfg(target_os = "macos")]
     {

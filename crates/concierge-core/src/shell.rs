@@ -163,6 +163,7 @@ fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command
 }
 
 #[cfg(target_os = "linux")]
+#[allow(clippy::unnecessary_wraps)] // signature shared with the fallible macOS impl
 fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command> {
     // bwrap: read-only root, then rw-bind each allowed path that exists.
     // (bwrap can't bind a nonexistent path; missing allows simply aren't
