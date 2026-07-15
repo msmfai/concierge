@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("repo not found: no manifest.toml above {0} (or set CONCIERGE_REPO)")]
+    #[error("no Concierge profile found from {0}. Open the Concierge app and use \"+ add game\", or run `concierge init <game>` in a workspace, or set CONCIERGE_REPO to a profile directory.")]
     RepoNotFound(PathBuf),
     #[error("io: {path}: {source}")]
     Io {
