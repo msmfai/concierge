@@ -120,9 +120,18 @@ fn main() -> eframe::Result {
             let _ = concierge::nexus::append_nxm_inbox(&arg);
         }
     }
+    // Use the wgpu backend (DirectX 12 on Windows, Metal on macOS, Vulkan on
+    // Linux). The default glow/OpenGL path fails to create a context on Windows
+    // setups without the WGL ES-context extension (older Intel drivers, VMs,
+    // remote desktop, Wine); wgpu targets the platform's native graphics API
+    // and is the robust choice for shipping across varied GPUs.
+    let native_options = eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        ..Default::default()
+    };
     eframe::run_native(
         "Concierge",
-        eframe::NativeOptions::default(),
+        native_options,
         Box::new(|cc| {
             install_fonts(&cc.egui_ctx);
             Ok(Box::new(App::new()))

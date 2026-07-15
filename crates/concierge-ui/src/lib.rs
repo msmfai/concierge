@@ -487,12 +487,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
             None
         };
         v.push(hv(
-            t(
-                Intent::SortLoad,
-                f.sort_label.clone(),
-                edit_ok,
-                sort_guard,
-            ),
+            t(Intent::SortLoad, f.sort_label.clone(), edit_ok, sort_guard),
             "auto-sort the load order (LOOT) and record it",
         ));
         v.push(hv(
