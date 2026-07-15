@@ -24,8 +24,8 @@ that can only write where the pack allows.
   `undeploy` removes everything.
 - Agent operation: per-pack assistant instructions and a sandboxed
   `concierge shell`.
-- CLI plus an egui GUI (mod browser, preview/apply, rollback). The GUI is
-  source-built for now: `cargo run -p concierge-gui`.
+- CLI plus an egui GUI (mod browser, preview/apply, rollback). Both the
+  `concierge` CLI and the `concierge-gui` app are in every download.
 
 ## Downloads
 

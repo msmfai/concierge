@@ -44,9 +44,10 @@ The command line is the primary interface; there is also a GUI.
 
 ## Getting started
 
-Download a binary from the
-[releases page](https://github.com/msmfai/concierge/releases/latest) or build
-with `cargo build --release`.
+Download a build from the
+[releases page](https://github.com/msmfai/concierge/releases/latest) — each
+archive contains both the `concierge` command-line tool and the `concierge-gui`
+app for your platform — or build from source with `cargo build --release`.
 
 ```sh
 cp -r examples/fallout4-profile my-pack
