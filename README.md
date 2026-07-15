@@ -1,129 +1,113 @@
-# Concierge 🧤
+<h1 align="center">Concierge 🧤</h1>
 
-**Your entire mod setup in one file — deployed, verified, and launched without
-ever touching your game install.**
+<p align="center"><i>Your modded game, in one file.</i></p>
 
-Concierge is a declarative mod manager. You describe the modded game you want
-in a single `manifest.toml`; Concierge makes it real — downloads hash-pinned
-archives, resolves installers, deploys into a disposable copy of the game, and
-launches it. Delete everything and rebuild the identical setup from the
-manifest; carry the file to another machine and rebuild it there.
+<p align="center">
+<a href="https://github.com/msmfai/concierge/actions/workflows/ci.yml"><img src="https://github.com/msmfai/concierge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/msmfai/concierge/releases/latest"><img src="https://img.shields.io/github/v/release/msmfai/concierge" alt="Latest release"></a>
+<a href="https://github.com/msmfai/concierge/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License"></a>
+</p>
 
-- **Your install is sacred.** Mods deploy into a copy-on-write *instance*; the
-  original game directory is never written, and `doctor` proves it.
-- **One file is the whole truth.** Mods, versions, content hashes, installer
-  choices, load order — reviewable, diffable, versionable.
-- **Reproducible by construction.** Every archive is content-addressed; every
-  deploy is a pure function of the manifest.
-- **Cross-game.** One engine, ~45 games: the Bethesda family, Baldur's Gate 3,
-  KOTOR, RimWorld, Stardew, Minecraft, Valheim, Cyberpunk 2077, Elden Ring,
-  and more — plus a generic mode for anything else.
-- **Agent-ready.** Profiles ship an AI-agent command guide and an OS-sandboxed
-  shell whose write-boundary is derived from the plan — an agent (or you) can
-  work on the modlist with the game install denied at the OS level.
+## Introduction
 
-**Status: early release.** Fallout 4 is the deepest, end-to-end path
-(including macOS via CrossOver); other adapters are functional at varying
-depth. Expect rough edges — see [RELEASE_NOTES](RELEASE_NOTES.md).
+Concierge is a declarative mod manager. Your entire setup — every mod,
+version, installer choice, and the load order — lives in a single
+`manifest.toml`, and Concierge turns it into a running modded game.
 
-## 30-second quickstart
+Our goal is a stable modded game you can trust: your original game files are
+never touched, every download is verified, and the exact same setup can be
+rebuilt from scratch on any machine. Spend less time managing mods and more
+time playing your games.
+
+## Features
+
+- **Multi-game support** — one engine for around 45 games, including
+  [Fallout 4](https://www.nexusmods.com/fallout4),
+  [Skyrim](https://www.nexusmods.com/skyrimspecialedition),
+  [Baldur's Gate 3](https://www.nexusmods.com/baldursgate3/),
+  [Starfield](https://www.nexusmods.com/starfield/),
+  [Cyberpunk 2077](https://www.nexusmods.com/cyberpunk2077/),
+  [Elden Ring](https://www.nexusmods.com/eldenring),
+  [Stardew Valley](https://www.nexusmods.com/stardewvalley/),
+  [RimWorld](https://www.nexusmods.com/rimworld),
+  [Witcher 3](https://www.nexusmods.com/witcher3),
+  [The Sims 4](https://www.nexusmods.com/thesims4),
+  [Valheim](https://www.nexusmods.com/valheim) and KOTOR — plus a generic
+  mode for games without dedicated support.
+
+- **Your game files stay untouched** — mods deploy into a disposable copy of
+  the game, never into your install. One command verifies it; one command
+  removes everything Concierge ever placed.
+
+- **Setups you can share and rebuild** — because the whole setup is one file,
+  you can back it up, put it in git, send it to a friend, or rebuild it on a
+  new machine and get the identical result.
+
+- **Installer choices as data** — FOMOD installer options are recorded in the
+  manifest and replayed exactly, so reinstalling never means clicking through
+  wizards again.
+
+- **Automatic load order and health checks** — built-in LOOT-based sorting,
+  and safety checks that catch missing dependencies, plugin-limit problems,
+  and broken setups *before* the game crashes.
+
+- **Nexus Mods integration** — automatic downloads with a Premium API key or
+  a guided flow without one, plus a locally searchable catalog of every mod
+  for your game.
+
+- **Profiles** — keep independent modlists per game and switch between them;
+  shared downloads mean a mod two profiles use is only fetched once.
+
+- **Built for automation** — everything works from the command line, and
+  profiles are AI-agent-ready out of the box, with a sandbox that keeps any
+  agent away from your game install at the operating-system level.
+
+- **A GUI too** — mod list, mod browser, preview and apply, and rollback to
+  any previous state.
+
+## Getting Started
+
+Download the latest release for Linux, Windows, or macOS from the
+[releases page](https://github.com/msmfai/concierge/releases/latest), or
+build from source with `cargo build --release` (or the Nix flake).
+
+Then point a profile at your game and go:
 
 ```sh
 cp -r examples/fallout4-profile my-pack
-$EDITOR my-pack/manifest.toml                # point it at your install
+$EDITOR my-pack/manifest.toml        # set your game paths
 export CONCIERGE_REPO=$PWD/my-pack
 
-concierge preview                            # see what WOULD deploy — nothing moves
-concierge realize --sort                     # fetch → pin → build → deploy → sort
-concierge doctor                             # health report: all green?
-concierge launch                             # play
+concierge preview                    # see what would happen — nothing moves
+concierge realize --sort             # download, install, sort the load order
+concierge doctor                     # health check
+concierge launch                     # play
 ```
 
-`concierge deactivate` reverses a launch; `concierge undeploy` removes every
-file Concierge placed. Your original install was never touched either way.
+Concierge is an early release: Fallout 4 is the most play-tested path today,
+and the other games share the same engine at varying levels of polish. More
+detail lives in the [docs](docs/) and the
+[release notes](RELEASE_NOTES.md).
 
-## What it does
+## Resources
 
-- **FOMOD installers, as data.** Instead of clicking through an installer
-  wizard, record the choices: `[mod.fomod] select = ["..."]`. Only the
-  selected files deploy; `concierge fomod <mod>` lists a mod's options, and a
-  mistyped choice fails loudly instead of silently installing nothing.
-- **Load order, solved.** Native LOOT-masterlist sorting; `realize --sort` is
-  the whole converge in one command.
-- **Safety rails everywhere.** `preview` shows the exact files and activations
-  before anything deploys. Game-specific invariant lints (missing masters,
-  plugin limits, dependency cycles) refuse a deploy that would crash.
-  `doctor` gives one pass/fail report: pins, lints, inert plugins, drift,
-  pristine safety. `launch --check` reads the script-extender log and tells
-  you what failed to load and why.
-- **Nexus integration.** Automatic downloads with a Premium API key, a guided
-  click-and-ingest flow without one, a local searchable catalog of the whole
-  Nexus index for your game, and `audit` to verify every declared mod id.
-- **A GUI too.** Mod list, catalog browser, preview/apply, generations, and an
-  embedded terminal that runs *your* agent inside the sandbox.
+- [Download Concierge](https://github.com/msmfai/concierge/releases/latest) — prebuilt binaries for Linux, Windows, and macOS
+- [Documentation](docs/) — schemas, coverage, and design notes
+- [Issues](https://github.com/msmfai/concierge/issues) — bug reports and feature requests
 
-## Supported games
+## Contributing
 
-One `GameAdapter` per game supplies the install layout, activation registry,
-lints, and vocabulary; everything downstream is game-agnostic.
+Concierge is open source and we'd love to have you involved — whether that's
+fixing bugs, adding support for a new game, improving documentation, or just
+spreading the word.
 
-- **Bethesda family** — Fallout 4 · Skyrim SE/LE · Fallout 3 · New Vegas ·
-  Oblivion · Starfield: plugins.txt load order, FOMOD, LOOT sorting,
-  master/plugin-limit lints.
-- **Baldur's Gate 3** (pak + `modsettings.lsx` registry) · **KOTOR 1/2**
-  (Override installs with a native TSLPatcher-style 2DA/TLK merge) ·
-  **RimWorld** · **Stardew Valley** · **Minecraft** · **Valheim**.
-- **~30 loose-file games** (Cyberpunk 2077, Witcher 3, Elden Ring, The Sims 4,
-  …) via a data-driven adapter, plus four merge-tool games.
-- **Anything else** via `kind = "generic"` (pure file overlay) or a
-  data-driven `[game.custom]` block — per-game code is an accelerator, not a
-  requirement.
+- **Bug report** — if something breaks or surprises you, please
+  [open an issue](https://github.com/msmfai/concierge/issues/new).
+- **Feature request** — if there's a capability you're missing, please
+  [tell us about it](https://github.com/msmfai/concierge/issues/new).
+- **Code** — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to build, test,
+  and submit changes.
 
-## How it works
+## License
 
-`manifest.toml` → **`eval`** → a pure, hashed *plan* (what would deploy and
-activate) → **`realize`** → the world made to match: archives fetched into a
-content-addressed store, extracted into immutable build trees, the pristine
-install cloned copy-on-write into an *instance*, mods hardlinked in, the
-game's activation registry rendered, invariant lints enforced. Profiles share
-the store, so a mod used by two modlists downloads once. The full command set:
-
-| command | what it does |
-|---|---|
-| `eval` / `preview` | pure plan / dry-run of files + activations |
-| `realize [--fresh] [--sort]` | make the instance match the plan |
-| `doctor` / `check [--vanilla]` | health report / drift detection |
-| `plugins` / `sort` / `conflicts` | activation truth, LOOT order, conflict reports |
-| `fomod <mod>` | installer options + current selection |
-| `launch [--check]` / `deactivate` | play / cleanly reverse |
-| `undeploy` | remove everything Concierge placed |
-| `audit` / `db sync` | verify mod ids / build the local catalog |
-
-## Install
-
-Prebuilt CLI binaries for Linux, Windows, and macOS are on the
-[releases page](https://github.com/msmfai/concierge/releases).
-
-With Nix (all helper tools included):
-
-```sh
-nix run github:msmfai/concierge -- --help
-nix develop                       # hacking devshell; then: cargo build
-```
-
-With plain cargo:
-
-```sh
-cargo build --release             # binary at target/release/concierge
-cargo run -p concierge-gui        # the GUI
-```
-
-Archive extraction uses `bsdtar` — preinstalled on macOS and Windows 10+; on
-Linux install `libarchive-tools`. For automatic Nexus downloads put a Premium
-API key in `~/.config/fo4nix/nexus-api-key` (or `NEXUS_API_KEY`).
-
-## Contributing & license
-
-Issues, fixes, and new game adapters are welcome — see
-[CONTRIBUTING.md](CONTRIBUTING.md). Licensed GPL-3.0-or-later — see
-[LICENSE](LICENSE).
+This project is licensed under the [GPL-3.0](LICENSE) license.
