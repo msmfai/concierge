@@ -8,6 +8,8 @@
 <a href="https://github.com/msmfai/concierge/releases/latest"><img src="https://img.shields.io/github/v/release/msmfai/concierge" alt="Latest release"></a>
 <a href="https://github.com/msmfai/concierge/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="License"></a>
 
+![A Cyberpunk 2077 mod pack in Concierge: a text-file list of mods — Cyber Engine Tweaks, redscript, RED4ext, ArchiveXL — with toggles, versions, and Download / Apply / Play.](docs/hero.png)
+
 Concierge is a mod manager. Your mod list lives in a text file; Concierge
 downloads the mods, verifies them, installs them into a separate copy of the
 game, sorts the load order, and launches. The original game install is never
