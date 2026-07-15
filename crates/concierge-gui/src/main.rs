@@ -107,6 +107,9 @@ fn install_panic_hook() {
 }
 
 fn main() -> eframe::Result {
+    // Surfaces wgpu/winit diagnostics when RUST_LOG is set (e.g.
+    // RUST_LOG=wgpu_core=info,wgpu_hal=info); silent otherwise.
+    env_logger::Builder::from_default_env().init();
     // Wire every family/leaf adapter crate into core's resolver at startup.
     concierge_games::register();
     install_panic_hook();
