@@ -329,6 +329,8 @@ struct App {
     lint: Vec<Violation>,
     rel_issues: Vec<String>,
     error: Option<String>,
+    /// A prominent green success banner from the last action (Apply/Check/…).
+    notice: Option<String>,
     new_profile_name: String,
     search: String,
     selected: Option<String>,
@@ -337,6 +339,9 @@ struct App {
     log: Vec<String>,
     log_rx: Receiver<String>,
     log_tx: Sender<String>,
+    /// Action outcome (ok?, message) surfaced as a banner, not just the log.
+    flash_rx: Receiver<(bool, String)>,
+    flash_tx: Sender<(bool, String)>,
     busy: Arc<AtomicBool>,
     /// Set by an off-thread action that edited the manifest; the update loop
     /// reloads the plan (on the UI thread) when it sees this.
@@ -426,6 +431,7 @@ const fn mod_source(m: &Mod) -> &'static str {
 impl App {
     fn new() -> Self {
         let (log_tx, log_rx) = std::sync::mpsc::channel();
+        let (flash_tx, flash_rx) = std::sync::mpsc::channel();
         let (browse_tx, browse_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             workspace: None,
@@ -438,6 +444,7 @@ impl App {
             lint: Vec::new(),
             rel_issues: Vec::new(),
             error: None,
+            notice: None,
             new_profile_name: String::new(),
             search: String::new(),
             selected: None,
@@ -446,6 +453,8 @@ impl App {
             log: Vec::new(),
             log_rx,
             log_tx,
+            flash_rx,
+            flash_tx,
             busy: Arc::new(AtomicBool::new(false)),
             reload_pending: Arc::new(AtomicBool::new(false)),
             edit: None,
@@ -1211,6 +1220,7 @@ impl App {
             return;
         };
         let tx = self.log_tx.clone();
+        let flash = self.flash_tx.clone();
         let busy = Arc::clone(&self.busy);
         let reload_pending = Arc::clone(&self.reload_pending);
         let mutates = action.mutates_manifest();
@@ -1218,6 +1228,12 @@ impl App {
             let _ = tx.send(format!("> {name}"));
             match run_blocking(&repo, &plan, action, &tx) {
                 Ok(lines) => {
+                    let summary = lines
+                        .iter()
+                        .rev()
+                        .find(|l| l.contains("placed") || l.contains('✅'))
+                        .cloned()
+                        .unwrap_or_else(|| format!("{name} finished"));
                     for l in lines {
                         let _ = tx.send(l);
                     }
@@ -1225,9 +1241,12 @@ impl App {
                         reload_pending.store(true, Ordering::SeqCst);
                     }
                     let _ = tx.send(format!("{name} done"));
+                    let _ = flash.send((true, summary));
                 }
                 Err(e) => {
-                    let _ = tx.send(format!("{name}: {e}"));
+                    let msg = e.to_string();
+                    let _ = tx.send(format!("{name}: {msg}"));
+                    let _ = flash.send((false, format!("{name} failed — {msg}")));
                 }
             }
             busy.store(false, Ordering::SeqCst);
@@ -1868,6 +1887,15 @@ impl eframe::App for App {
             self.handle_nxm(&url);
         }
         let mut new_log = Vec::new();
+        while let Ok((ok, msg)) = self.flash_rx.try_recv() {
+            if ok {
+                self.notice = Some(msg);
+                self.error = None;
+            } else {
+                self.error = Some(msg);
+                self.notice = None;
+            }
+        }
         while let Ok(line) = self.log_rx.try_recv() {
             new_log.push(line);
         }
@@ -1979,6 +2007,9 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(err) = &self.error {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+            }
+            if let Some(n) = &self.notice {
+                ui.colored_label(egui::Color32::from_rgb(90, 200, 120), n);
             }
             let Some(plan) = plan else {
                 if self.games.is_empty() {
