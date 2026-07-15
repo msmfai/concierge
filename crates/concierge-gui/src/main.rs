@@ -3343,11 +3343,11 @@ impl App {
             Arc::clone(&self.browse_refresh),
         );
         let prog = Arc::clone(&self.sync_progress);
-        fn set_prog(g: &Arc<std::sync::Mutex<Option<String>>>, v: Option<String>) {
+        let set_prog = |g: &Arc<std::sync::Mutex<Option<String>>>, v: Option<String>| {
             if let Ok(mut lock) = g.lock() {
                 *lock = v;
             }
-        }
+        };
         set_prog(
             &prog,
             Some("Downloading the mod list… (one-time, can take a couple of minutes)".to_owned()),
