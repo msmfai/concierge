@@ -231,11 +231,12 @@ mod tests {
 
     #[test]
     fn env_and_cwd_reach_the_child() {
-        // Use a real dir we control; /tmp symlinks to /private/tmp on macOS so
-        // $PWD wouldn't match verbatim.
-        // Short path so `pwd` doesn't wrap at 80 cols and split the leaf.
-        let canon =
-            std::path::PathBuf::from(format!("/private/tmp/cg-term-{}", std::process::id()));
+        // Canonicalized so $PWD matches verbatim (/tmp is a symlink to
+        // /private/tmp on macOS). Short path so `pwd` doesn't wrap at 80 cols.
+        let canon = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("cg-term-{}", std::process::id()));
         std::fs::create_dir_all(&canon).unwrap();
         let term = PtyTerminal::spawn(
             &[
