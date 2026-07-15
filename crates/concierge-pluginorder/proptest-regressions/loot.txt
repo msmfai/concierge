@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4a83e490e1760602de055f02b80e3e602ca0297ea3ecc89873ce26ef0c1e8158 # shrinks to (n, is_master, edges, overrides) = (2, [true, false], [], [0, 0])
+cc 20bb73cf2167e6bfea5096c13633778745f7f77eb9a091f8d26c50672e96e1c0 # shrinks to (n, is_master, edges, overrides) = (2, [false, true], [(0, 1)], [0, 0])

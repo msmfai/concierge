@@ -1,0 +1,18 @@
+[package]
+name = "concierge-lint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge pre-launch validators — encode each supported game's crash-causing modding invariants and fail `realize` with a specific reason (the LOOT/MO2/SMAPI role)."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+concierge-pluginorder = { path = "../concierge-pluginorder" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+roxmltree = "0.20"
+toml = "0.8"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

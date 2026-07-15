@@ -1,0 +1,12 @@
+[package]
+name = "concierge-runtimeinject"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge BepInEx family — injected-runtime Unity games (Valheim, Lethal Company, …); plugins under BepInEx/plugins, Thunderstore catalog."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+
+[lints]
+workspace = true

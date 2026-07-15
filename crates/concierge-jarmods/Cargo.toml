@@ -1,0 +1,12 @@
+[package]
+name = "concierge-jarmods"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge Minecraft family — jar mods under mods/, loader-resolved ordering; catalog is Modrinth/CurseForge, not Nexus."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "concierge-modfolders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge SMAPI family — Stardew Valley and other SMAPI-loader games (folders under Mods/, no load-order file)."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+
+[lints]
+workspace = true

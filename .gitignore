@@ -1,0 +1,29 @@
+# shared, content-addressed download cache + pure build outputs (reproducible)
+store/
+builds/
+target/
+# per-profile realized state, derived plan, collision backups (machine-local);
+# games/<game>/vanilla-inventory.tsv stays tracked (the pristine baseline)
+state/realized.json
+state/plan.json
+state/backup/
+state/db/
+# per-user mod catalog cache (synced from Nexus' public API; never re-served)
+state/catalog.sqlite
+# AI transcript logs
+ai-logs/
+state/audit.json
+state/loot/
+state/ConciergeResolver.esp
+/games/
+/master/
+/meta/
+/.bare/
+.cg-verify-in.sh
+.cg-win-in.sh
+# local helper binaries
+/tools/
+/7zz
+/7z.exe
+/7za.exe
+/clickhouse

@@ -1,0 +1,23 @@
+[package]
+name = "concierge-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local ClickHouse metadata store: per-game mod catalogs for AI curation context"
+
+[features]
+# ClickHouse (concierge-db::ch) is LEGACY — only for migrating an old catalog
+# into the SQLite catalog. Off by default; the default build has no clickhouse.
+clickhouse = []
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+concierge-platform = { path = "../concierge-platform" }
+md-5 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+ureq = { version = "2", features = ["json"] }
+
+[lints]
+workspace = true

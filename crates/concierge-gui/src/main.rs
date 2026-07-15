@@ -1,0 +1,3466 @@
+//! Concierge GUI — game-agnostic dashboard over the shared-cache + profiles
+//! model. Pick a game and profile; see and edit its mods (toggle, reorder,
+//! add, remove), the load order, conflicts and invariant lints; then
+//! realize/check/launch with a live log. Every mutation goes through the pure,
+//! format-preserving `concierge::manifest_edit` functions — the manifest stays
+//! the single source of truth; the UI writes it and re-evals. All real work
+//! lives in the core + accelerator crates; this is a thin shell.
+
+#![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+
+mod terminal;
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
+
+use concierge::manifest::{Manifest, Mod};
+use concierge::manifest_edit::{self, NewMod, NewSource};
+use concierge::plan::{eval, Plan};
+use concierge::profiles::{self, GameEntry, ProfileEntry};
+use concierge::repo::Repo;
+use concierge::state::Realized;
+use concierge_ai::tools::{catalog_search, CatalogFilter, CatalogHit};
+use concierge_lint::{Severity, Violation};
+
+/// The two halves of the Nix-style model: the editable declaration (manifest)
+/// vs the read-only realised generation (what is deployed on disk).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum CentralTab {
+    Declaration,
+    Realised,
+}
+
+/// The last action the user triggered — recorded so a panic log has context.
+static LAST_ACTION: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Where crash diagnostics are written (portable per-OS data dir).
+fn crash_log_path() -> std::path::PathBuf {
+    concierge_platform::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("concierge")
+        .join("crash.log")
+}
+
+/// The durable action log — the operational log stream (fetch/add/apply/…)
+/// persisted so a failed session stays diagnosable after the GUI exits.
+fn action_log_path() -> std::path::PathBuf {
+    concierge_platform::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("concierge")
+        .join("actions.log")
+}
+
+/// Append log lines to the durable action log with a monotonic frame stamp
+/// (`SystemTime` seconds). Best-effort — a logging failure never disrupts the UI.
+fn append_action_log(lines: &[String]) {
+    use std::io::Write as _;
+    if lines.is_empty() {
+        return;
+    }
+    let path = action_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        for l in lines {
+            let _ = writeln!(f, "{ts}\t{l}");
+        }
+    }
+}
+
+/// Install a panic hook that appends the panic, the last action, and a backtrace
+/// to the crash log (then runs the default hook so stderr still shows it). The
+/// unexplained interaction-triggered crash is finally diagnosable.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        use std::io::Write as _;
+        let path = crash_log_path();
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let bt = std::backtrace::Backtrace::force_capture();
+        let last = LAST_ACTION
+            .lock()
+            .map_or_else(|_| String::new(), |s| s.clone());
+        let body = format!(
+            "==== Concierge panic ====\nlast action: {last}\n{info}\n\nbacktrace:\n{bt}\n\n"
+        );
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = f.write_all(body.as_bytes());
+        }
+        default(info);
+    }));
+}
+
+fn main() -> eframe::Result {
+    // Wire every family/leaf adapter crate into core's resolver at startup.
+    concierge_games::register();
+    install_panic_hook();
+    // A browser "Mod Manager Download" (nxm://) launches the app with the URL as
+    // an arg; drop it in the inbox so this (or an already-running) instance pins
+    // it. (The already-running-instance case for a running app is served by the
+    // per-frame inbox poll in update(); browser->running-app without a relaunch
+    // still needs macOS openURLs glue.)
+    for arg in std::env::args().skip(1) {
+        if arg.starts_with("nxm://") {
+            let _ = concierge::nexus::append_nxm_inbox(&arg);
+        }
+    }
+    eframe::run_native(
+        "Concierge",
+        eframe::NativeOptions::default(),
+        Box::new(|_cc| Ok(Box::new(App::new()))),
+    )
+}
+
+/// A collected, deferred mutation — applied after the frame so the render pass
+/// never holds a conflicting borrow of `self`.
+enum Edit {
+    Toggle(String, bool),
+    Nudge(String, bool),
+    Move(usize, usize),
+    Remove(String),
+    Add(NewMod),
+}
+
+/// A destructive action awaiting confirmation (Nielsen #5 / NN/g). The guard is
+/// deliberately co-located with each destructive call site.
+enum Confirm {
+    RemoveMod(String),
+    Undeploy,
+    RestoreSave(String),
+    Rollback(u64),
+    DeleteProfile(String),
+}
+
+impl Confirm {
+    fn prompt(&self) -> String {
+        match self {
+            Self::RemoveMod(n) => format!("Remove mod '{n}' from your setup?"),
+            Self::Undeploy => "Uninstall — remove the installed mods from the game?".to_owned(),
+            Self::RestoreSave(g) => format!("Restore saves from backup {g}, overwriting current saves?"),
+            Self::Rollback(n) => format!("Restore your setup to version {n}?"),
+            Self::DeleteProfile(n) => format!("Delete profile '{n}' and all its data (setup, versions, save backups)? This cannot be undone."),
+        }
+    }
+}
+
+/// The off-thread outcome of one catalog read: the hits, an optional refreshed
+/// category list (only when it was recomputed), and a status message.
+struct BrowseResult {
+    hits: Vec<CatalogHit>,
+    categories: Option<Vec<(String, u64)>>,
+    msg: String,
+    /// `(rows, synced_epoch)` for the sync status line — computed off-thread so
+    /// the window never queries the catalog during a repaint.
+    status: (u64, u64),
+}
+
+#[derive(Default)]
+struct AddForm {
+    open: bool,
+    name: String,
+    version: String,
+    nexus_mod: String,
+    nexus_file: String,
+    url: String,
+    md5: String,
+    file: String,
+    plugins: String,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+struct App {
+    workspace: Option<PathBuf>,
+    games: Vec<GameEntry>,
+    game_idx: usize,
+    profiles: Vec<ProfileEntry>,
+    profile_idx: usize,
+    manifest: Option<Manifest>,
+    plan: Option<Plan>,
+    lint: Vec<Violation>,
+    rel_issues: Vec<String>,
+    error: Option<String>,
+    new_profile_name: String,
+    search: String,
+    selected: Option<String>,
+    add: AddForm,
+    cache: (usize, u64),
+    log: Vec<String>,
+    log_rx: Receiver<String>,
+    log_tx: Sender<String>,
+    busy: Arc<AtomicBool>,
+    /// Set by an off-thread action that edited the manifest; the update loop
+    /// reloads the plan (on the UI thread) when it sees this.
+    reload_pending: Arc<AtomicBool>,
+    edit: Option<Edit>,
+    /// The agent view IS a terminal: the user's real interactive agent,
+    /// running in the concierge-shell sandbox for the active profile.
+    term: Option<terminal::PtyTerminal>,
+    term_epoch: u64,
+    central_tab: CentralTab,
+    dark: bool,
+    ai_visible: bool,
+    undo: Vec<String>,
+    settings_open: bool,
+    diff_open: bool,
+    browse_open: bool,
+    browse_query: String,
+    nxm_input: String,
+    nexus_account: Arc<std::sync::Mutex<String>>,
+    browse_hits: Vec<CatalogHit>,
+    browse_msg: String,
+    /// First-class category filter: None = all categories.
+    browse_category: Option<String>,
+    /// Sort order (default: most endorsed).
+    browse_sort: concierge_ai::tools::SortBy,
+    /// (category, count) for the active game's catalog — the filter's options.
+    browse_categories: Vec<(String, u64)>,
+    /// Catalog reads run off the UI thread; results arrive here tagged with the
+    /// request seq so stale ones (from a superseded search) are dropped.
+    browse_tx: Sender<(u64, BrowseResult)>,
+    browse_rx: Receiver<(u64, BrowseResult)>,
+    browse_seq: u64,
+    browse_busy: bool,
+    /// Cached `(rows, synced_epoch)` for the sync status line (refreshed by the
+    /// worker), and a flag the sync thread sets to trigger a re-search.
+    browse_status: (u64, u64),
+    browse_refresh: Arc<AtomicBool>,
+    mutable: bool,
+    confirm: Option<Confirm>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Action {
+    Realize,
+    Fetch,
+    Check,
+    Launch,
+    Undeploy,
+    Reconcile,
+    Conflicts,
+    SortLoot,
+    ResolveDeps,
+    SuggestPatches,
+}
+
+impl Action {
+    /// Whether this action edits `manifest.toml` — the GUI reloads the plan
+    /// after such an action completes off-thread.
+    const fn mutates_manifest(self) -> bool {
+        // Fetch auto-pins md5s; Realize auto-pins + resolves layout — both
+        // edit manifest.toml, so the UI must reload the plan afterward.
+        matches!(
+            self,
+            Self::SortLoot | Self::ResolveDeps | Self::Fetch | Self::Realize
+        )
+    }
+}
+
+fn is_bethesda(kind: &str) -> bool {
+    matches!(kind, "fallout4" | "skyrimse")
+}
+
+const fn mod_source(m: &Mod) -> &'static str {
+    if m.pipeline.is_some() {
+        "pipeline"
+    } else if m.nix.is_some() {
+        "nix"
+    } else if m.nexus_mod_id.is_some() {
+        "nexus"
+    } else if m.url.is_some() {
+        "url"
+    } else {
+        "-"
+    }
+}
+
+impl App {
+    fn new() -> Self {
+        let (log_tx, log_rx) = std::sync::mpsc::channel();
+        let (browse_tx, browse_rx) = std::sync::mpsc::channel();
+        let mut app = Self {
+            workspace: None,
+            games: Vec::new(),
+            game_idx: 0,
+            profiles: Vec::new(),
+            profile_idx: 0,
+            manifest: None,
+            plan: None,
+            lint: Vec::new(),
+            rel_issues: Vec::new(),
+            error: None,
+            new_profile_name: String::new(),
+            search: String::new(),
+            selected: None,
+            add: AddForm::default(),
+            cache: (0, 0),
+            log: Vec::new(),
+            log_rx,
+            log_tx,
+            busy: Arc::new(AtomicBool::new(false)),
+            reload_pending: Arc::new(AtomicBool::new(false)),
+            edit: None,
+            term: None,
+            term_epoch: 0,
+            central_tab: CentralTab::Declaration,
+            dark: true,
+            ai_visible: true,
+            undo: Vec::new(),
+            settings_open: false,
+            diff_open: false,
+            browse_open: false,
+            browse_query: String::new(),
+            nxm_input: String::new(),
+            nexus_account: Arc::new(std::sync::Mutex::new(String::new())),
+            browse_hits: Vec::new(),
+            browse_msg: String::new(),
+            browse_category: None,
+            browse_sort: concierge_ai::tools::SortBy::Endorsements,
+            browse_categories: Vec::new(),
+            browse_tx,
+            browse_rx,
+            browse_seq: 0,
+            browse_busy: false,
+            browse_status: (0, 0),
+            browse_refresh: Arc::new(AtomicBool::new(false)),
+            mutable: true,
+            confirm: None,
+        };
+        app.discover();
+        // Surface a crash from a previous run (the panic hook wrote it), then
+        // move it aside so it isn't re-reported.
+        let crash = crash_log_path();
+        if crash.is_file() {
+            let prev = crash.with_extension("log.prev");
+            let _ = std::fs::rename(&crash, &prev);
+            app.error = Some(format!(
+                "Concierge crashed on a previous run — diagnostics saved to {}",
+                prev.display()
+            ));
+        }
+        app
+    }
+
+    fn discover(&mut self) {
+        self.error = None;
+        match profiles::workspace() {
+            Ok(ws) => {
+                self.games = profiles::list_games(&ws);
+                let _ = self.log_tx.send(format!(
+                    "workspace: {} ({} games)",
+                    ws.display(),
+                    self.games.len()
+                ));
+                self.workspace = Some(ws);
+                self.game_idx = self.game_idx.min(self.games.len().saturating_sub(1));
+                self.reload_profiles();
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    fn reload_profiles(&mut self) {
+        self.profiles = self
+            .games
+            .get(self.game_idx)
+            .map(|g| profiles::list_profiles(&g.dir))
+            .unwrap_or_default();
+        self.profile_idx = self.profile_idx.min(self.profiles.len().saturating_sub(1));
+        // Locked lives on disk; render the active profile's truth.
+        if let Some(p) = self.profiles.get(self.profile_idx) {
+            self.mutable = !profiles::is_locked(&p.dir);
+        }
+        // The catalog + its categories are per-game — reset the browse filters.
+        self.browse_categories.clear();
+        self.browse_category = None;
+        self.browse_hits.clear();
+        self.reload_plan();
+    }
+
+    fn active_repo(&self) -> Option<Repo> {
+        let profile = self.profiles.get(self.profile_idx)?;
+        Some(Repo::at(&profile.dir))
+    }
+
+    fn manifest_path(&self) -> Option<PathBuf> {
+        Some(self.active_repo()?.profile.join("manifest.toml"))
+    }
+
+    /// The active game's vocabulary — Bethesda says "load order", etc. Generic
+    /// when no game is resolved. Lets game-specific terms override generic labels.
+    fn active_lexicon(&self) -> concierge::game::Lexicon {
+        self.plan
+            .as_ref()
+            .and_then(|p| concierge::game::adapter_for(&p.game.kind).ok())
+            .map_or_else(
+                concierge::game::Lexicon::default,
+                concierge::game::GameAdapter::lexicon,
+            )
+    }
+
+    /// Extract the pure [`concierge_ui::UiFacts`] snapshot from this frame's
+    /// state — the SAME view-model the headless text/automaton renderer uses.
+    fn ui_facts(&self) -> concierge_ui::UiFacts {
+        let kind = self.plan.as_ref().map(|p| p.game.kind.clone());
+        let lex = self.active_lexicon();
+        let confirm = self.confirm.as_ref().map(|c| match c {
+            Confirm::RemoveMod(_) => concierge_ui::ConfirmKind::RemoveMod,
+            Confirm::Undeploy => concierge_ui::ConfirmKind::Uninstall,
+            Confirm::RestoreSave(_) => concierge_ui::ConfirmKind::RestoreSave,
+            Confirm::Rollback(_) => concierge_ui::ConfirmKind::Rollback,
+            Confirm::DeleteProfile(_) => concierge_ui::ConfirmKind::DeleteProfile,
+        });
+        let tab = match self.central_tab {
+            CentralTab::Declaration => concierge_ui::Tab::Setup,
+            CentralTab::Realised => concierge_ui::Tab::Installed,
+        };
+        let mods = self.manifest.as_ref().map_or_else(Vec::new, |m| {
+            m.mods
+                .iter()
+                .enumerate()
+                .map(|(i, md)| concierge_ui::ModRow {
+                    order: i + 1,
+                    name: md.name.clone(),
+                    enabled: md.enabled,
+                })
+                .collect()
+        });
+        let panels = self.build_panels();
+        let (versions, saves, pin_status) = self.build_versions_saves();
+        concierge_ui::UiFacts {
+            has_workspace: self.workspace.is_some(),
+            workspace_path: self.workspace.as_ref().map(|w| w.display().to_string()),
+            game_count: self.games.len(),
+            active_game: kind.clone(),
+            active_profile: self.profiles.get(self.profile_idx).map(|p| p.name.clone()),
+            is_bethesda: kind.as_deref().is_some_and(is_bethesda),
+            has_catalog: self
+                .plan
+                .as_ref()
+                .is_some_and(|p| p.game.nexus_domain.is_some()),
+            tab: concierge_ui::TabFacts(tab),
+            mutable: self.mutable,
+            has_undo: !self.undo.is_empty(),
+            busy: self.busy.load(Ordering::SeqCst),
+            ai_busy: self.term.as_ref().is_some_and(|t| !t.finished()),
+            settings_open: self.settings_open,
+            browse_open: self.browse_open,
+            diff_open: self.diff_open,
+            confirm,
+            confirm_prompt: self.confirm.as_ref().map(Confirm::prompt),
+            error: self.error.clone(),
+            mods,
+            log_tail: self.log.iter().rev().take(5).rev().cloned().collect(),
+            order_word: lex.order.to_owned(),
+            sort_label: lex.sort_action.to_owned(),
+            nxm_input: self.nxm_input.clone(),
+            search: self.search.clone(),
+            browse_query: self.browse_query.clone(),
+            browse_msg: self.browse_msg.clone(),
+            browse_hits: {
+                let declared: std::collections::BTreeSet<u64> = self
+                    .manifest
+                    .as_ref()
+                    .map(|m| m.mods.iter().filter_map(|md| md.nexus_mod_id).collect())
+                    .unwrap_or_default();
+                self.browse_hits
+                    .iter()
+                    .map(|h| concierge_ui::BrowseHit {
+                        mod_id: h.mod_id,
+                        name: h.name.clone(),
+                        endorsements: h.endorsements,
+                        author: h.author.clone(),
+                        summary: h.summary.clone(),
+                        category: h.category.clone(),
+                        downloads: h.downloads,
+                        updated_at: h.updated_at.clone(),
+                        added: declared.contains(&h.mod_id),
+                    })
+                    .collect()
+            },
+            add_open: self.add.open,
+            add_fields: if self.add.open {
+                self.add_form_fields()
+            } else {
+                Vec::new()
+            },
+            versions,
+            saves,
+            pin_status,
+            ai_input: String::new(),
+            ai_can_send: self.plan.is_some(),
+            ai_quick: concierge_ai::agent::quick_actions()
+                .iter()
+                .map(|qa| qa.label.to_owned())
+                .collect(),
+            games: self.games.iter().map(|g| g.game.clone()).collect(),
+            profiles: self.profiles.iter().map(|p| p.name.clone()).collect(),
+            game_idx: self.game_idx,
+            profile_idx: self.profile_idx,
+            new_profile: self.new_profile_name.clone(),
+            cache_summary: {
+                let (n, bytes) = self.cache;
+                format!("cache: {n}, {}", human_bytes(bytes))
+            },
+            panels,
+        }
+    }
+
+    /// Setup versions (generations) + save backups + the pinned-versions status,
+    /// as projected data. Reads the repo (same as the panels did inline).
+    fn build_versions_saves(&self) -> (Vec<concierge_ui::VersionRow>, Vec<String>, Option<String>) {
+        let Some(repo) = self.active_repo() else {
+            return (Vec::new(), Vec::new(), None);
+        };
+        let versions = concierge::generations::list(&repo)
+            .into_iter()
+            .map(|g| concierge_ui::VersionRow {
+                number: g.number,
+                hash: g.plan_hash.chars().take(10).collect(),
+            })
+            .collect();
+        let saves = concierge::saves::list(&repo);
+        let pin_status = concierge::lockfile::read(&repo).map(|lock| {
+            let synced = self
+                .plan
+                .as_ref()
+                .and_then(|p| p.hash().ok())
+                .is_some_and(|h| h == lock.plan_hash);
+            format!(
+                "pinned {} ({} mods) — {}",
+                lock.plan_hash.chars().take(10).collect::<String>(),
+                lock.mods.len(),
+                if synced {
+                    "matches your setup"
+                } else {
+                    "stale — Apply to re-lock"
+                }
+            )
+        });
+        (versions, saves, pin_status)
+    }
+
+    /// The add-mod form's text fields as projected [`concierge_ui::Field`]s.
+    fn add_form_fields(&self) -> Vec<concierge_ui::Field> {
+        let f = |id: &str, label: &str, v: &str| concierge_ui::Field {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            value: v.to_owned(),
+        };
+        vec![
+            f("add_name", "name", &self.add.name),
+            f("add_version", "version", &self.add.version),
+            f("add_nexus_mod", "nexus mod id", &self.add.nexus_mod),
+            f("add_nexus_file", "nexus file id", &self.add.nexus_file),
+            f("add_url", "or url", &self.add.url),
+            f("add_md5", "md5", &self.add.md5),
+            f("add_file", "file", &self.add.file),
+            f("add_plugins", "plugins (comma-sep)", &self.add.plugins),
+        ]
+    }
+
+    /// Build the read-only info panels for the visible window(s). Settings for
+    /// now (workspace, [game.paths], API-key presence, Nexus account status).
+    fn build_panels(&self) -> Vec<concierge_ui::Panel> {
+        let mut panels = Vec::new();
+        if self.settings_open {
+            let mut lines = Vec::new();
+            match &self.workspace {
+                Some(ws) => lines.push(format!(
+                    "workspace: {} ({} games)",
+                    ws.display(),
+                    self.games.len()
+                )),
+                None => lines.push("no workspace resolved".to_owned()),
+            }
+            if let Some(m) = &self.manifest {
+                lines.push("game paths [game.paths]:".to_owned());
+                if m.game.paths.is_empty() {
+                    lines.push("  (none declared)".to_owned());
+                }
+                for (k, v) in &m.game.paths {
+                    lines.push(format!("  {k} = {}", v.display()));
+                }
+            }
+            let key = |rel: &str| {
+                if config_dir().join(rel).exists() {
+                    "set"
+                } else {
+                    "not set"
+                }
+            };
+            lines.push(format!(
+                "API keys: Nexus={}, Anthropic={}",
+                key("nexus-api-key"),
+                key("anthropic-api-key")
+            ));
+            if let Ok(s) = self.nexus_account.lock() {
+                if !s.is_empty() {
+                    lines.push(format!("account: {s}"));
+                }
+            }
+            panels.push(concierge_ui::Panel {
+                id: "settings".into(),
+                title: "Settings".into(),
+                lines,
+            });
+        }
+        if self.diff_open {
+            let mut lines = vec![
+                "Preview of your Setup vs what is Installed. Nothing changes until you Apply."
+                    .to_owned(),
+            ];
+            let realized = self
+                .active_repo()
+                .and_then(|r| Realized::load(&r).ok())
+                .unwrap_or_default();
+            let mut per_mod: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for rec in realized.files.values() {
+                *per_mod.entry(rec.mod_name.clone()).or_default() += 1;
+            }
+            let enabled: Vec<&str> = self.manifest.as_ref().map_or_else(Vec::new, |m| {
+                m.mods
+                    .iter()
+                    .filter(|md| md.enabled)
+                    .map(|md| md.name.as_str())
+                    .collect()
+            });
+            let adds: Vec<&str> = enabled
+                .iter()
+                .copied()
+                .filter(|n| !per_mod.contains_key(*n))
+                .collect();
+            let removes: Vec<&str> = per_mod
+                .keys()
+                .filter(|n| !enabled.contains(&n.as_str()))
+                .map(String::as_str)
+                .collect();
+            lines.push(format!("+ deploy ({})", adds.len()));
+            lines.extend(adds.iter().map(|a| format!("   + {a}")));
+            lines.push(format!("- remove ({})", removes.len()));
+            lines.extend(removes.iter().map(|r| format!("   - {r}")));
+            let lex = self.active_lexicon();
+            let order = self.plan.as_ref().map_or_else(Vec::new, load_order);
+            let realised_order = self.plan.as_ref().map_or_else(Vec::new, deployed_order);
+            if order == realised_order {
+                lines.push(format!("{} unchanged", lex.order));
+            } else {
+                lines.push(format!("~ {} will change", lex.order));
+            }
+            if adds.is_empty() && removes.is_empty() && order == realised_order {
+                lines.push("No pending changes — Installed matches your Setup.".to_owned());
+            }
+            panels.push(concierge_ui::Panel {
+                id: "preview".into(),
+                title: "Preview changes".into(),
+                lines,
+            });
+        }
+        panels
+    }
+
+    /// This frame's [`concierge_ui::Screen`] — the single source of truth the
+    /// action bar renders from and the headless view mirrors.
+    fn screen(&self) -> concierge_ui::Screen {
+        concierge_ui::build_screen(&self.ui_facts())
+    }
+
+    /// Dispatch a widget intent (by its stable `concierge-ui` id) to the concrete
+    /// behaviour. Every projected widget renders FROM the screen and calls this —
+    /// so App mutates ONLY through here, never from a hand-coded widget.
+    fn dispatch_intent(&mut self, id: &str) {
+        match id {
+            // action bar
+            "download" => self.run_action("download", Action::Fetch),
+            "apply" => self.run_action("apply", Action::Realize),
+            "verify" => self.run_action("verify", Action::Check),
+            "sort_load" => self.run_action("sort order", Action::SortLoot),
+            "requirements" => self.run_action("requirements", Action::ResolveDeps),
+            "find_patches" => self.run_action("find patches", Action::SuggestPatches),
+            "merge_conflicts" => self.run_action("merge conflicts", Action::Reconcile),
+            "conflicts" => self.run_action("conflicts", Action::Conflicts),
+            "play" => self.run_action("play", Action::Launch),
+            "uninstall" => self.confirm = Some(Confirm::Undeploy),
+            // chrome
+            // Locked is a fact ON DISK (manifest read-only + immutable flag),
+            // not a GUI mood: toggle it there, then render from it.
+            "toggle_lock" => {
+                if let Some(repo) = self.active_repo() {
+                    let want_locked = self.mutable; // toggling away from mutable
+                    if let Err(e) = profiles::set_locked(&repo.profile, want_locked) {
+                        let _ = self.log_tx.send(format!("lock toggle failed: {e}"));
+                    }
+                    self.mutable = !profiles::is_locked(&repo.profile);
+                } else {
+                    self.mutable = !self.mutable;
+                }
+            }
+            "tab_setup" => self.central_tab = CentralTab::Declaration,
+            "tab_installed" => self.central_tab = CentralTab::Realised,
+            "open_settings" => self.settings_open = true,
+            "close_settings" => self.settings_open = false,
+            "check_account" => self.check_account(),
+            "open_browse" => {
+                self.browse_open = true;
+                // Open pre-populated: everything, most-endorsed first.
+                if self.browse_hits.is_empty() && !self.browse_busy {
+                    self.do_browse_search();
+                }
+            }
+            "close_browse" => self.browse_open = false,
+            "browse_search" => self.do_browse_search(),
+            "nxm_add" => {
+                let url = std::mem::take(&mut self.nxm_input);
+                self.handle_nxm(&url);
+            }
+            _ if id.starts_with("add_hit:") => {
+                if let Ok(mod_id) = id.trim_start_matches("add_hit:").parse::<u64>() {
+                    let name = self
+                        .browse_hits
+                        .iter()
+                        .find(|h| h.mod_id == mod_id)
+                        .map(|h| h.name.clone())
+                        .unwrap_or_default();
+                    self.add_catalog_hit(mod_id, &name);
+                }
+            }
+            "open_preview" => self.diff_open = true,
+            "close_preview" => self.diff_open = false,
+            "undo" => self.undo_edit(),
+            // confirm dialog
+            "confirm_yes" => {
+                if let Some(c) = self.confirm.take() {
+                    self.execute_confirm(c);
+                }
+            }
+            "confirm_no" => self.confirm = None,
+            // per-mod enable toggle: "mod_toggle:<name>"
+            _ if id.starts_with("mod_toggle:") => {
+                let name = id.trim_start_matches("mod_toggle:");
+                let cur = self
+                    .manifest
+                    .as_ref()
+                    .and_then(|m| m.mods.iter().find(|md| md.name == name))
+                    .is_some_and(|md| md.enabled);
+                self.edit = Some(Edit::Toggle(name.to_owned(), !cur));
+            }
+            _ if id.starts_with("mod_select:") => {
+                self.selected = Some(id.trim_start_matches("mod_select:").to_owned());
+            }
+            _ if id.starts_with("mod_up:") => {
+                self.edit = Some(Edit::Nudge(
+                    id.trim_start_matches("mod_up:").to_owned(),
+                    true,
+                ));
+            }
+            _ if id.starts_with("mod_down:") => {
+                self.edit = Some(Edit::Nudge(
+                    id.trim_start_matches("mod_down:").to_owned(),
+                    false,
+                ));
+            }
+            _ if id.starts_with("mod_remove:") => {
+                self.confirm = Some(Confirm::RemoveMod(
+                    id.trim_start_matches("mod_remove:").to_owned(),
+                ));
+            }
+            _ if id.starts_with("mod_move:") => {
+                let rest = id.trim_start_matches("mod_move:");
+                if let Some((f, t)) = rest.split_once(':') {
+                    if let (Ok(from), Ok(to)) = (f.parse::<usize>(), t.parse::<usize>()) {
+                        self.edit = Some(Edit::Move(from, to));
+                    }
+                }
+            }
+            "add_open" => self.add.open = !self.add.open,
+            "add_confirm" => self.submit_add(),
+            _ if id.starts_with("rollback:") => {
+                if let Ok(n) = id.trim_start_matches("rollback:").parse::<u64>() {
+                    self.confirm = Some(Confirm::Rollback(n));
+                }
+            }
+            _ if id.starts_with("restore_save:") => {
+                self.confirm = Some(Confirm::RestoreSave(
+                    id.trim_start_matches("restore_save:").to_owned(),
+                ));
+            }
+            "ai_interrupt" => {
+                if let Some(t) = &self.term {
+                    t.kill();
+                }
+            }
+            "ai_work" => self.work_on_profile(),
+            "rescan" => self.discover(),
+            "delete_profile" => {
+                if let Some(p) = self.profiles.get(self.profile_idx) {
+                    self.confirm = Some(Confirm::DeleteProfile(p.name.clone()));
+                }
+            }
+            "create_empty" => self.create_profile(false),
+            "create_clone" => self.create_profile(true),
+            "new_modpack_ai" => self.new_modpack_concierge(),
+            _ if id.starts_with("select_game:") => {
+                if let Ok(i) = id.trim_start_matches("select_game:").parse::<usize>() {
+                    if i != self.game_idx && i < self.games.len() {
+                        self.game_idx = i;
+                        self.profile_idx = 0;
+                        self.selected = None;
+                        self.reload_profiles();
+                    }
+                }
+            }
+            _ if id.starts_with("select_profile:") => {
+                if let Ok(i) = id.trim_start_matches("select_profile:").parse::<usize>() {
+                    if i != self.profile_idx && i < self.profiles.len() {
+                        self.profile_idx = i;
+                        self.selected = None;
+                        self.reload_plan();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Render one transition as an egui button that dispatches its intent — the
+    /// single projection primitive reused by every region (action bar, confirm,
+    /// chrome). Styling (fill/hover) is the renderer's business; the label,
+    /// enabled state, and behaviour all come from the [`concierge_ui::Transition`].
+    fn transition_button(&mut self, ui: &mut eframe::egui::Ui, tr: &concierge_ui::Transition) {
+        use concierge_ui::WidgetKind;
+        use eframe::egui;
+        let mut resp = match tr.kind {
+            // Tabs and toggles show selection (selectable_label); a button doesn't.
+            WidgetKind::Tab | WidgetKind::Toggle => {
+                ui.selectable_label(tr.selected, tr.label.as_str())
+            }
+            WidgetKind::Button => {
+                let mut btn = egui::Button::new(tr.label.as_str());
+                if tr.id == "confirm_yes" {
+                    btn = btn.fill(egui::Color32::from_rgb(170, 70, 70));
+                }
+                ui.add_enabled(tr.enabled, btn)
+            }
+        };
+        if let Some(h) = &tr.hover {
+            resp = resp.on_hover_text(h.as_str());
+        } else if let Some(g) = &tr.guard {
+            resp = resp.on_hover_text(g.as_str());
+        }
+        if resp.clicked() {
+            self.dispatch_intent(&tr.id);
+        }
+    }
+
+    /// Render a per-row button (dynamic id) via the projection primitive — for
+    /// grid cells whose enabled state is position-dependent (mod ↑/↓/remove).
+    fn row_btn(&mut self, ui: &mut eframe::egui::Ui, id: &str, label: &str, enabled: bool) {
+        let tr = concierge_ui::Transition {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            kind: concierge_ui::WidgetKind::Button,
+            selected: false,
+            enabled,
+            guard: None,
+            hover: None,
+            target: None,
+        };
+        self.transition_button(ui, &tr);
+    }
+
+    /// Render every transition of a given widget kind from this frame's screen —
+    /// the projection loop reused by the tab bar, etc.
+    fn render_kind(&mut self, ui: &mut eframe::egui::Ui, kind: concierge_ui::WidgetKind) {
+        let items: Vec<concierge_ui::Transition> = self
+            .screen()
+            .transitions
+            .into_iter()
+            .filter(|t| t.kind == kind)
+            .collect();
+        for tr in &items {
+            self.transition_button(ui, tr);
+        }
+    }
+
+    /// Render a text field from the screen by id, dispatching edits back through
+    /// `dispatch_type` — so text input is projected + headless-drivable too.
+    /// Returns whether Enter was pressed (for submit-on-Enter fields).
+    fn render_field(&mut self, ui: &mut eframe::egui::Ui, id: &str) -> bool {
+        use eframe::egui;
+        let Some(field) = self.screen().fields.into_iter().find(|f| f.id == id) else {
+            return false;
+        };
+        let mut val = field.value;
+        let resp = ui.add(egui::TextEdit::singleline(&mut val).hint_text(field.label));
+        if resp.changed() {
+            self.dispatch_type(id, &val);
+        }
+        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if !val.is_empty() && ui.small_button("x").clicked() {
+            self.dispatch_type(id, "");
+        }
+        enter
+    }
+
+    /// Apply a text-field edit (the `type <field> <val>` intent) to app state.
+    fn dispatch_type(&mut self, id: &str, value: &str) {
+        match id {
+            "search" => value.clone_into(&mut self.search),
+            "nxm_input" => value.clone_into(&mut self.nxm_input),
+            "browse_query" => value.clone_into(&mut self.browse_query),
+            "new_profile" => value.clone_into(&mut self.new_profile_name),
+            "add_name" => value.clone_into(&mut self.add.name),
+            "add_version" => value.clone_into(&mut self.add.version),
+            "add_nexus_mod" => value.clone_into(&mut self.add.nexus_mod),
+            "add_nexus_file" => value.clone_into(&mut self.add.nexus_file),
+            "add_url" => value.clone_into(&mut self.add.url),
+            "add_md5" => value.clone_into(&mut self.add.md5),
+            "add_file" => value.clone_into(&mut self.add.file),
+            "add_plugins" => value.clone_into(&mut self.add.plugins),
+            _ => {}
+        }
+    }
+
+    fn reload_plan(&mut self) {
+        self.error = None;
+        self.plan = None;
+        self.manifest = None;
+        self.lint = Vec::new();
+        self.rel_issues = Vec::new();
+        let Some(repo) = self.active_repo() else {
+            return;
+        };
+        self.cache = profiles::cache_stats(&repo);
+        match Manifest::load(&repo.profile) {
+            Ok(m) => {
+                self.manifest = Some(m.clone());
+                self.rel_issues = m.relation_issues();
+                match eval(&m) {
+                    Ok(plan) => {
+                        self.lint = concierge_lint::validate(&plan).unwrap_or_default();
+                        self.plan = Some(plan);
+                    }
+                    Err(e) => self.error = Some(e.to_string()),
+                }
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// Apply a collected edit: read the manifest, transform it, write it back,
+    /// re-eval. Errors surface in the error banner.
+    fn apply(&mut self, edit: Edit) {
+        let Some(path) = self.manifest_path() else {
+            self.error = Some("no manifest to edit".to_owned());
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.error = Some(format!("read manifest: {e}"));
+                return;
+            }
+        };
+        let edited = match edit {
+            Edit::Toggle(name, en) => manifest_edit::set_mod_enabled(&text, &name, en),
+            Edit::Nudge(name, up) => manifest_edit::nudge_mod(&text, &name, up),
+            Edit::Move(from, to) => manifest_edit::move_mod(&text, from, to),
+            Edit::Remove(name) => manifest_edit::remove_mod(&text, &name),
+            Edit::Add(m) => manifest_edit::add_mod(&text, &m),
+        };
+        match edited {
+            Ok(new_text) => match concierge::manifest_edit::write_manifest(&path, &new_text) {
+                Ok(()) => {
+                    // snapshot the pre-edit manifest so the edit can be undone
+                    self.undo.push(text);
+                    if self.undo.len() > 30 {
+                        self.undo.remove(0);
+                    }
+                    self.reload_plan();
+                }
+                Err(e) => self.error = Some(format!("write manifest: {e}")),
+            },
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// Undo the last declaration edit by restoring the previous manifest.
+    fn undo_edit(&mut self) {
+        let Some(prev) = self.undo.pop() else {
+            return;
+        };
+        let Some(path) = self.manifest_path() else {
+            return;
+        };
+        match concierge::manifest_edit::write_manifest(&path, &prev) {
+            Ok(()) => self.reload_plan(),
+            Err(e) => self.error = Some(format!("undo: {e}")),
+        }
+    }
+
+    fn submit_add(&mut self) {
+        let a = &self.add;
+        let name = a.name.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        let source = if let Ok(mod_id) = a.nexus_mod.trim().parse::<u32>() {
+            NewSource::Nexus {
+                mod_id,
+                file_id: a.nexus_file.trim().parse::<u32>().unwrap_or(0),
+            }
+        } else {
+            NewSource::Url(a.url.trim().to_owned())
+        };
+        let plugins = a
+            .plugins
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let new = NewMod {
+            name,
+            version: a.version.trim().to_owned(),
+            source,
+            md5: a.md5.trim().to_owned(),
+            file: a.file.trim().to_owned(),
+            install_root: "data".to_owned(),
+            plugins,
+        };
+        self.add = AddForm::default();
+        self.apply(Edit::Add(new));
+    }
+
+    fn run_action(&self, name: &'static str, action: Action) {
+        if let Ok(mut a) = LAST_ACTION.lock() {
+            name.clone_into(&mut a);
+        }
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (Some(repo), Some(plan)) = (self.active_repo(), self.plan.clone()) else {
+            self.busy.store(false, Ordering::SeqCst);
+            return;
+        };
+        let tx = self.log_tx.clone();
+        let busy = Arc::clone(&self.busy);
+        let reload_pending = Arc::clone(&self.reload_pending);
+        let mutates = action.mutates_manifest();
+        std::thread::spawn(move || {
+            let _ = tx.send(format!("> {name}"));
+            match run_blocking(&repo, &plan, action, &tx) {
+                Ok(lines) => {
+                    for l in lines {
+                        let _ = tx.send(l);
+                    }
+                    if mutates {
+                        reload_pending.store(true, Ordering::SeqCst);
+                    }
+                    let _ = tx.send(format!("{name} done"));
+                }
+                Err(e) => {
+                    let _ = tx.send(format!("{name}: {e}"));
+                }
+            }
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
+
+    fn create_profile(&mut self, clone_active: bool) {
+        let Some(game) = self.games.get(self.game_idx) else {
+            return;
+        };
+        let clone_from = if clone_active {
+            self.profiles.get(self.profile_idx).map(|p| p.dir.clone())
+        } else {
+            None
+        };
+        let name = self.new_profile_name.trim().to_owned();
+        match profiles::create_profile(&game.dir, &name, clone_from.as_deref()) {
+            Ok(_) => {
+                self.new_profile_name.clear();
+                let target = self.profiles.len();
+                self.reload_profiles();
+                self.profile_idx = target.min(self.profiles.len().saturating_sub(1));
+                self.reload_plan();
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+}
+
+/// The enabled plugin load order the game will read (DLC + mod plugins), pulled
+/// from the plan's generated `plugins.txt` config.
+fn load_order(plan: &Plan) -> Vec<String> {
+    // Identify the plugins.txt config by filename OR (when the path is a blank
+    // placeholder, e.g. a fresh profile) by content — the load-order config is
+    // the one with `*`-prefixed activation lines.
+    plan.configs
+        .iter()
+        .find(|c| {
+            std::path::Path::new(&c.path)
+                .file_name()
+                .is_some_and(|n| n == "plugins.txt")
+                || c.content.lines().any(|l| l.starts_with('*'))
+        })
+        .map(|c| {
+            c.content
+                .lines()
+                .filter_map(|l| l.strip_prefix('*'))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The plugin order actually written to the deployed `plugins.txt` on disk (the
+/// realised order), as opposed to `load_order`'s declared/planned order.
+fn deployed_order(plan: &Plan) -> Vec<String> {
+    plan.configs
+        .iter()
+        .find(|c| {
+            std::path::Path::new(&c.path)
+                .file_name()
+                .is_some_and(|n| n == "plugins.txt")
+        })
+        .and_then(|c| std::fs::read_to_string(&c.path).ok())
+        .map(|s| {
+            s.lines()
+                .filter_map(|l| l.strip_prefix('*'))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Emit a named rebuild stage to the live log (so Realize shows progress, not
+/// just a spinner — Vortex's "manifest → sort → merge → deploy" idea).
+fn deploy_stage(tx: &Sender<String>, label: &str) {
+    let _ = tx.send(format!("  ▸ {label}"));
+}
+
+/// Append a Nexus `[[mod]]` to the manifest from a worker thread, atomically
+/// (write-temp + rename), and flag the UI to reload. Used by the off-thread
+/// Browse-add and nxm-download paths so neither blocks the egui thread.
+fn write_added_mod(repo: &Repo, entry: &NewMod, tx: &Sender<String>, reload: &Arc<AtomicBool>) {
+    // Atomic read-modify-write under the core write lock — concurrent adds
+    // queue and all complete (none silently clobbered).
+    let path = repo.profile.join("manifest.toml");
+    match concierge::manifest_edit::add_mod_to_file(&path, entry) {
+        Ok(()) => {
+            let _ = tx.send(format!("added '{}'", entry.name));
+            reload.store(true, Ordering::SeqCst);
+        }
+        Err(e) => {
+            let _ = tx.send(format!("add {}: {e}", entry.name));
+        }
+    }
+}
+
+/// Build a Nexus `[[mod]]` entry for the off-thread add paths.
+fn nexus_new_mod(
+    name: String,
+    mod_id: u64,
+    file_id: u64,
+    md5: String,
+    file: String,
+    version: String,
+) -> NewMod {
+    NewMod {
+        name,
+        version: if version.is_empty() {
+            "1".to_owned()
+        } else {
+            version
+        },
+        source: NewSource::Nexus {
+            mod_id: u32::try_from(mod_id).unwrap_or(0),
+            file_id: u32::try_from(file_id).unwrap_or(0),
+        },
+        md5,
+        file,
+        install_root: "data".to_owned(),
+        plugins: Vec::new(),
+    }
+}
+
+fn run_blocking(
+    repo: &Repo,
+    plan: &Plan,
+    action: Action,
+    tx: &Sender<String>,
+) -> concierge::Result<Vec<String>> {
+    match action {
+        Action::Realize => {
+            let mut out = Vec::new();
+            deploy_stage(tx, "back up saves");
+            if let Some(b) = concierge::saves::backup(repo, plan)? {
+                out.push(format!(
+                    "backed up {} save file(s) -> generation {}",
+                    b.files, b.generation
+                ));
+            }
+            // Converge: fetch → auto-pin md5 → build → auto-resolve layout
+            // (strip versioned roots, activate detected plugins) → deploy,
+            // re-evaluating after each manifest edit. Replaces the old
+            // fetch/build/realize that dead-ended on the first unpinned mod.
+            deploy_stage(tx, "fetch → pin → build → resolve → deploy");
+            let converge = concierge::realize::realize_converged(repo, false)?;
+            for line in &converge.resolved {
+                out.push(format!("resolved: {line}"));
+            }
+            let Some(r) = converge.report else {
+                // Couldn't complete — run a preflight so EVERY unresolved item
+                // is named, not just the first failure.
+                let plan = concierge::manifest::Manifest::load(&repo.profile)
+                    .and_then(|m| eval(&m))
+                    .ok();
+                for b in &converge.blocked {
+                    out.push(format!("⏸ download needed — {b}"));
+                }
+                if let Some(p) = &plan {
+                    for issue in concierge::realize::preflight(repo, p) {
+                        out.push(format!(
+                            "unresolved [{}]: {} — {}",
+                            issue.kind.label(),
+                            issue.mod_name,
+                            issue.detail
+                        ));
+                    }
+                }
+                return Err(concierge::Error::Other(
+                    "Apply preflight: unresolved items above must be fixed first".into(),
+                ));
+            };
+            out.push(format!(
+                "placed {} files ({} owned)",
+                r.placed, r.total_owned
+            ));
+            // Post-deploy reporting runs against the CONVERGED plan.
+            let manifest = concierge::manifest::Manifest::load(&repo.profile)?;
+            let plan = &eval(&manifest)?;
+            // Nix-style: record this declaration as an immutable generation.
+            if let Ok(text) = std::fs::read_to_string(repo.profile.join("manifest.toml")) {
+                let hash = plan.hash().unwrap_or_default();
+                if let Ok(g) = concierge::generations::snapshot(repo, &text, &hash) {
+                    out.push(format!("recorded generation {}", g.number));
+                }
+            }
+            // Write the resolved-state lock (reproducible pin of this profile).
+            if let Ok(lock) = concierge::lockfile::write(repo, plan) {
+                out.push(format!("locked {} mods -> concierge.lock", lock.mods.len()));
+            }
+            deploy_stage(tx, "lint");
+            // surface invariant lints post-deploy, like the CLI
+            let issues = concierge_lint::validate(plan).unwrap_or_default();
+            let (errors, warnings) = concierge_lint::partition(issues);
+            for w in &warnings {
+                out.push(format!("warn {} [{}]: {}", w.subject, w.rule, w.detail));
+            }
+            // Declared-relationship issues (missing requires, active incompatibles,
+            // out-of-window game version) — the dependency/conflict health signal.
+            let rel_issues = concierge::manifest::Manifest::load(&repo.profile)
+                .map(|m| m.relation_issues())
+                .unwrap_or_default();
+            for r in &rel_issues {
+                out.push(format!("relation: {r}"));
+            }
+            // Deterministic dependency check: plugins whose masters aren't present.
+            let missing_masters = if is_bethesda(&plan.game.kind) {
+                concierge_pluginorder::missing_masters(plan).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            for mm in &missing_masters {
+                out.push(format!(
+                    "dependency: '{}' missing master(s): {}",
+                    mm.plugin,
+                    mm.missing.join(", ")
+                ));
+            }
+            if errors.is_empty() {
+                out.push(format!(
+                    "✅ health check: GO — {} plugin(s), {} warning(s), {} relation issue(s), {} missing-master dep(s)",
+                    plan.mods.len(),
+                    warnings.len(),
+                    rel_issues.len(),
+                    missing_masters.len()
+                ));
+                Ok(out)
+            } else {
+                for e in &errors {
+                    out.push(format!("ERROR {} [{}]: {}", e.subject, e.rule, e.detail));
+                }
+                Err(concierge::Error::Other(format!(
+                    "❌ health check: NO-GO — {} invariant violation(s); fix and re-realize",
+                    errors.len()
+                )))
+            }
+        }
+        Action::Fetch => {
+            use concierge::store::FetchOutcome as F;
+            let manifest_path = repo.profile.join("manifest.toml");
+            let results = concierge::store::fetch_all(repo, plan)?;
+            let total = results.len();
+            let (mut cached, mut downloaded) = (0usize, 0usize);
+            let mut needed: Vec<String> = Vec::new();
+            let mut pins: Vec<String> = Vec::new();
+            for (name, outcome) in results {
+                match outcome {
+                    F::Present(_) => cached += 1,
+                    F::Stored(_) => downloaded += 1,
+                    F::NeedsPin { md5, .. } => {
+                        downloaded += 1;
+                        // Write the computed md5 straight into manifest.toml —
+                        // no more "pin it yourself" dead-end.
+                        let doc = std::fs::read_to_string(&manifest_path)
+                            .map_err(|e| concierge::Error::Other(e.to_string()))?;
+                        match concierge::manifest_edit::pin_mod(&doc, &name, &md5, None, None, None)
+                        {
+                            Ok(updated) => {
+                                concierge::manifest_edit::write_manifest(&manifest_path, &updated)?;
+                                pins.push(format!("  pinned {name} -> md5 {md5}"));
+                            }
+                            Err(e) => pins.push(format!(
+                                "  {name}: computed md5 {md5} but couldn't pin ({e})"
+                            )),
+                        }
+                    }
+                    F::Blocked { instructions } => {
+                        needed.push(format!("  • {name}: {instructions}"));
+                    }
+                }
+            }
+            let present = total.saturating_sub(needed.len());
+            let mut out = vec![format!(
+                "download queue: {present}/{total} present  ({cached} cached, {downloaded} downloaded this run)"
+            )];
+            if needed.is_empty() {
+                out.push("✅ all archives present + pinned — Apply can complete".to_owned());
+            } else {
+                out.push(format!(
+                    "⏸ {} still needed — click 'Mod Manager Download' on each (one click each, free), or save to ~/Downloads, then re-run:",
+                    needed.len()
+                ));
+                out.extend(needed);
+            }
+            out.extend(pins);
+            Ok(out)
+        }
+        Action::Check => {
+            let drift = concierge::check::check(repo, plan, false)?;
+            if drift.is_empty() {
+                Ok(vec!["clean".to_owned()])
+            } else {
+                Ok(drift.iter().map(|d| format!("{d:?}")).collect())
+            }
+        }
+        Action::Launch => {
+            let info = concierge::launch::launch(plan)?;
+            Ok(vec![format!("launched {} ({:?})", info.exe, info.runtime)])
+        }
+        Action::Undeploy => {
+            let (removed, skipped) = concierge::realize::undeploy(repo, plan, false)?;
+            Ok(vec![format!(
+                "undeployed {removed} files ({skipped} skipped)"
+            )])
+        }
+        Action::Conflicts => {
+            let (parsed, matrix) = concierge_pluginorder::conflict_matrix(plan)
+                .map_err(|e| concierge::Error::Other(e.to_string()))?;
+            let mut out = vec![format!(
+                "{parsed} plugins, {} conflicting record(s)",
+                matrix.conflicts.len()
+            )];
+            for c in matrix.conflicts.iter().take(40) {
+                let losers: Vec<&str> = c
+                    .carriers
+                    .iter()
+                    .filter(|p| **p != c.winner)
+                    .map(String::as_str)
+                    .collect();
+                out.push(format!(
+                    "  {} {:08X}: {} wins over {}",
+                    c.signature,
+                    c.object_id,
+                    c.winner,
+                    losers.join(", ")
+                ));
+            }
+            Ok(out)
+        }
+        Action::Reconcile => reconcile_and_deploy(repo, plan),
+        Action::SortLoot => {
+            let path = repo.profile.join("manifest.toml");
+            let report = concierge_pluginorder::loot::sort(repo, plan)
+                .map_err(|e| concierge::Error::Other(e.to_string()))?;
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| concierge::Error::Other(e.to_string()))?;
+            let new = concierge::manifest_edit::set_load_order(&text, &report.suggested)
+                .map_err(|e| concierge::Error::Other(e.to_string()))?;
+            concierge::manifest_edit::write_manifest(&path, &new)?;
+            Ok(vec![format!(
+                "LOOT: sorted {} plugins into [relations].load_order ({} dirty flagged)",
+                report.suggested.len(),
+                report.dirty.len()
+            )])
+        }
+        Action::ResolveDeps => {
+            let path = repo.profile.join("manifest.toml");
+            let dep = concierge_pluginorder::resolve_dependencies(plan)
+                .map_err(|e| concierge::Error::Other(e.to_string()))?;
+            let mut text = std::fs::read_to_string(&path)
+                .map_err(|e| concierge::Error::Other(e.to_string()))?;
+            let mut added = 0;
+            for (m, needs) in &dep.requires {
+                let new = concierge::manifest_edit::add_requires(&text, m, needs)
+                    .map_err(|e| concierge::Error::Other(e.to_string()))?;
+                if new != text {
+                    added += 1;
+                }
+                text = new;
+            }
+            concierge::manifest_edit::write_manifest(&path, &text)?;
+            let mut out = vec![format!(
+                "dependencies: recorded {added} new requires fact(s); {} unresolved missing master(s)",
+                dep.missing.len()
+            )];
+            for (m, mast) in dep.missing.iter().take(20) {
+                out.push(format!(
+                    "  ⚠ '{m}' needs master '{mast}' — no mod in the pack provides it"
+                ));
+            }
+            Ok(out)
+        }
+        Action::SuggestPatches => {
+            let game = plan.game.nexus_domain.clone().unwrap_or_default();
+            let filter = concierge::manifest::Manifest::load(&repo.profile)
+                .map(|m| CatalogFilter::from_curate(&m.curate))
+                .unwrap_or_default();
+            let mut pairs: std::collections::BTreeSet<(String, String)> =
+                std::collections::BTreeSet::new();
+            let norm = |mut a: String, mut b: String| {
+                if a > b {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                (a, b)
+            };
+            if let Ok(land) = concierge_ai::tools::conflict_landscape(repo, plan) {
+                for c in &land.asset_conflicts {
+                    for (i, a) in c.providers.iter().enumerate() {
+                        for b in c.providers.iter().skip(i + 1) {
+                            pairs.insert(norm(a.clone(), b.clone()));
+                        }
+                    }
+                }
+            }
+            if let Ok(m) = concierge::manifest::Manifest::load(&repo.profile) {
+                for inc in &m.relations.incompatible {
+                    pairs.insert(norm(inc.a.clone(), inc.b.clone()));
+                }
+            }
+            if pairs.is_empty() {
+                return Ok(vec![
+                    "no conflicting mod pairs — no patches needed".to_owned()
+                ]);
+            }
+            let mut out = Vec::new();
+            let mut found = 0;
+            for (a, b) in pairs.iter().take(15) {
+                let query = if a.len() <= b.len() { a } else { b };
+                let Ok(hits) = catalog_search(repo, &game, query, 6, &filter) else {
+                    continue;
+                };
+                for h in hits {
+                    let nl = h.name.to_lowercase();
+                    if nl.contains("patch") || nl.contains("compat") {
+                        found += 1;
+                        out.push(format!(
+                            "  patch for '{a}' + '{b}': {} (mod {})",
+                            h.name, h.mod_id
+                        ));
+                        break;
+                    }
+                }
+            }
+            out.push(if found == 0 {
+                format!(
+                    "checked {} conflicting pair(s); no catalog patch matched",
+                    pairs.len().min(15)
+                )
+            } else {
+                format!("suggested {found} compat patch(es) — add via Browse")
+            });
+            Ok(out)
+        }
+    }
+}
+
+fn reconcile_and_deploy(repo: &Repo, plan: &Plan) -> concierge::Result<Vec<String>> {
+    concierge::saves::backup(repo, plan)?;
+    concierge::store::fetch_all(repo, plan)?;
+    concierge::build::build_all(repo, plan)?;
+    concierge::realize::realize(repo, plan, false)?;
+    let report = concierge_pluginorder::reconcile::reconcile(repo, plan)
+        .map_err(|e| concierge::Error::Other(e.to_string()))?;
+    let mut out = vec![
+        format!(
+            "{} plugins: {} conflicts, {} danger-class (left alone)",
+            report.plugins, report.conflicts, report.danger
+        ),
+        format!(
+            "merged {} leveled + {} form-lists + {} UDR fixes -> {} resolver records ({} masters)",
+            report.leveled_merged,
+            report.formlist_merged,
+            report.udr_fixed,
+            report.resolver_records,
+            report.masters.len()
+        ),
+    ];
+    let resolver_name = "ConciergeResolver.esp";
+    let data = std::path::PathBuf::from(plan.game_dir()).join("Data");
+    std::fs::create_dir_all(&data).map_err(|e| concierge::Error::Other(e.to_string()))?;
+    std::fs::copy(&report.resolver, data.join(resolver_name))
+        .map_err(|e| concierge::Error::Other(e.to_string()))?;
+    for cfg in &plan.configs {
+        let path = std::path::PathBuf::from(&cfg.path);
+        if path.file_name().is_some_and(|n| n == "plugins.txt") {
+            let mut content = std::fs::read_to_string(&path).unwrap_or_default();
+            if !content.contains(resolver_name) {
+                if !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                content.push('*');
+                content.push_str(resolver_name);
+                content.push('\n');
+                std::fs::write(&path, content)
+                    .map_err(|e| concierge::Error::Other(e.to_string()))?;
+            }
+        }
+    }
+    out.push(format!(
+        "deployed {resolver_name}, activated last in plugins.txt"
+    ));
+    Ok(out)
+}
+
+/// Render one AI transcript line with light chat styling: user prompts
+/// accented, stderr/status dimmed, everything else monospace (wraps to column).
+/// Clamp a float to a `u16` window without a lint-flagged `as` cast on the
+/// full float domain — the value is already bounded to `[lo, hi]` integers.
+fn f32_to_u16(v: f32, lo: u16, hi: u16) -> u16 {
+    if !v.is_finite() || v <= f32::from(lo) {
+        return lo;
+    }
+    if v >= f32::from(hi) {
+        return hi;
+    }
+    // v is now within [lo, hi] ⊂ u16 range; round to nearest.
+    let r = v.round();
+    (lo..=hi).find(|n| f32::from(*n) >= r).unwrap_or(hi)
+}
+
+/// Human "N ago" for a Unix-seconds timestamp (0 = never).
+fn ago(epoch: u64) -> String {
+    if epoch == 0 {
+        return "never".to_owned();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let secs = now.saturating_sub(epoch);
+    match secs {
+        0..=3599 => format!("{}m ago", (secs / 60).max(1)),
+        3600..=86_399 => format!("{}h ago", secs / 3600),
+        _ => format!("{}d ago", secs / 86_400),
+    }
+}
+
+/// Record an "ok" audit verdict for a browser-added mod (its id came from the
+/// catalog, so it's verified by construction). Merges into state/audit.json —
+/// the same record `concierge audit` writes and `eval`/`realize` read.
+fn record_audit_ok(repo: &Repo, mod_id: u64, name: &str) {
+    let path = repo.state_dir().join("audit.json");
+    let mut obj = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    obj.insert(
+        mod_id.to_string(),
+        serde_json::json!({ "name": name, "verdict": "ok", "catalog_name": name }),
+    );
+    if std::fs::create_dir_all(repo.state_dir()).is_ok() {
+        if let Ok(s) = serde_json::to_string_pretty(&serde_json::Value::Object(obj)) {
+            let _ = std::fs::write(&path, s);
+        }
+    }
+}
+
+/// Is the `claude` CLI on PATH? Determines whether the agent terminal runs
+/// the real agent or falls back to a plain shell.
+fn which_agent_available() -> bool {
+    std::process::Command::new("claude")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Translate this frame's egui keyboard/text events into the byte stream a
+/// PTY expects. Covers text, Enter, Backspace, Tab, Esc, arrows,
+/// and Ctrl-<letter> control codes.
+fn keystrokes_to_bytes(ui: &eframe::egui::Ui, _ctx: &eframe::egui::Context) -> Vec<u8> {
+    use eframe::egui::{Event, Key};
+    let mut out = Vec::new();
+    ui.input(|i| {
+        for ev in &i.events {
+            match ev {
+                Event::Text(t) => out.extend_from_slice(t.as_bytes()),
+                Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    if modifiers.ctrl {
+                        // Ctrl-A..Ctrl-Z -> 0x01..0x1a
+                        if let Some(c) = key.name().bytes().next() {
+                            let up = c.to_ascii_uppercase();
+                            if up.is_ascii_uppercase() {
+                                out.push(up - b'A' + 1);
+                            }
+                        }
+                        continue;
+                    }
+                    match key {
+                        Key::Enter => out.push(b'\r'),
+                        Key::Backspace => out.push(0x7f),
+                        Key::Tab => out.push(b'\t'),
+                        Key::Escape => out.push(0x1b),
+                        Key::ArrowUp => out.extend_from_slice(b"\x1b[A"),
+                        Key::ArrowDown => out.extend_from_slice(b"\x1b[B"),
+                        Key::ArrowRight => out.extend_from_slice(b"\x1b[C"),
+                        Key::ArrowLeft => out.extend_from_slice(b"\x1b[D"),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    out
+}
+
+/// `~/.config/fo4nix` — where the CLI keeps API keys.
+fn config_dir() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").unwrap_or_default())
+        .join(".config")
+        .join("fo4nix")
+}
+
+/// Compact count for card stats: `9_000_000` becomes "9.0M", `12_000` "12.0k".
+/// Integer-only (one decimal via /100 remainder) — no float cast.
+fn human_count(n: u64) -> String {
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=999_999 => format!("{}.{}k", n / 1_000, (n % 1_000) / 100),
+        _ => format!("{}.{}M", n / 1_000_000, (n % 1_000_000) / 100_000),
+    }
+}
+
+/// A small pill/chip label (the category tag on a mod card).
+fn chip(ui: &mut eframe::egui::Ui, text: &str) {
+    use eframe::egui;
+    egui::Frame::new()
+        .fill(ui.visuals().widgets.inactive.bg_fill)
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(6, 1))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(text).size(11.0)).selectable(false));
+        });
+}
+
+fn human_bytes(n: u64) -> String {
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    let f = n as f64;
+    for (unit, size) in [("GB", 1e9), ("MB", 1e6), ("KB", 1e3)] {
+        if f >= size {
+            return format!("{:.1} {unit}", f / size);
+        }
+    }
+    format!("{n} B")
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+        use eframe::egui;
+        // nxm handoff: pin any links dropped in the inbox (browser download /
+        // `concierge nxm <url>` reaching this running instance).
+        for url in concierge::nexus::drain_nxm_inbox() {
+            self.handle_nxm(&url);
+        }
+        let mut new_log = Vec::new();
+        while let Ok(line) = self.log_rx.try_recv() {
+            new_log.push(line);
+        }
+        if !new_log.is_empty() {
+            append_action_log(&new_log); // durable: survives GUI exit
+            self.log.extend(new_log);
+        }
+        // Off-thread catalog reads: apply only the latest (drop superseded).
+        while let Ok((seq, res)) = self.browse_rx.try_recv() {
+            if seq != self.browse_seq {
+                continue;
+            }
+            self.browse_busy = false;
+            self.browse_hits = res.hits;
+            self.browse_msg = res.msg;
+            self.browse_status = res.status;
+            if let Some(cats) = res.categories {
+                self.browse_categories = cats;
+            }
+        }
+        // A finished catalog sync asks for a re-search (fresh counts + hits).
+        if self
+            .browse_refresh
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.browse_categories.clear();
+            self.do_browse_search();
+        }
+        // An off-thread action edited the manifest — reload on the UI thread.
+        if self
+            .reload_pending
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.reload_plan();
+        }
+        // Repaint promptly while the agent terminal is producing output.
+        if let Some(term) = &self.term {
+            let tick = term.dirty_tick();
+            if tick != self.term_epoch {
+                self.term_epoch = tick;
+                ctx.request_repaint();
+            } else if !term.finished() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+        }
+        let busy = self.busy.load(Ordering::SeqCst);
+
+        ctx.set_visuals(if self.dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        });
+
+        self.top_panel(ctx);
+
+        // Clone the data the central panel iterates so it can also mutate self.
+        let plan = self.plan.clone();
+        let mods: Vec<Mod> = self
+            .manifest
+            .as_ref()
+            .map_or_else(Vec::new, |m| m.mods.clone());
+        let order = plan.as_ref().map_or_else(Vec::new, load_order);
+        let realised_order = plan.as_ref().map_or_else(Vec::new, deployed_order);
+        let realized = self
+            .active_repo()
+            .and_then(|r| Realized::load(&r).ok())
+            .unwrap_or_default();
+        let mut per_mod: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for rec in realized.files.values() {
+            *per_mod.entry(rec.mod_name.clone()).or_default() += 1;
+        }
+        let synced = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.hash().ok())
+            .zip(realized.plan_hash.as_ref())
+            .is_some_and(|(h, r)| &h == r);
+
+        // AI assistant — a VSCode-style right-hand column (rightmost, collapsible).
+        if self.ai_visible {
+            self.ai_column(ctx);
+        }
+
+        egui::SidePanel::right("details")
+            .default_width(240.0)
+            .show(ctx, |ui| self.details_panel(ui, &mods, &per_mod));
+
+        egui::TopBottomPanel::bottom("log")
+            .resizable(true)
+            .default_height(140.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong("log");
+                    if ui.small_button("clear").clicked() {
+                        self.log.clear();
+                    }
+                });
+                egui::ScrollArea::vertical()
+                    .id_salt("log")
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &self.log {
+                            ui.monospace(line);
+                        }
+                    });
+            });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if let Some(err) = &self.error {
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+            }
+            let Some(plan) = plan else {
+                ui.label("select a game and profile");
+                return;
+            };
+            let bethesda = is_bethesda(&plan.game.kind);
+            let lex = concierge::game::adapter_for(&plan.game.kind)
+                .map_or_else(|_| concierge::game::Lexicon::default(), concierge::game::GameAdapter::lexicon);
+
+            // Lifecycle status row: declaration → rebuild → realised generation.
+            ui.horizontal(|ui| {
+                ui.label(format!("{} · {:?}", plan.game.kind, plan.game.runtime));
+                ui.separator();
+                ui.colored_label(
+                    if realized.plan_hash.is_none() {
+                        egui::Color32::GRAY
+                    } else if synced {
+                        egui::Color32::from_rgb(120, 190, 120)
+                    } else {
+                        egui::Color32::from_rgb(220, 170, 90)
+                    },
+                    if realized.plan_hash.is_none() {
+                        "not realized"
+                    } else if synced {
+                        "declaration realized"
+                    } else {
+                        "STALE — declaration changed since last rebuild"
+                    },
+                );
+                if let Some(tr) = self.screen().transitions.iter().find(|t| t.id == "verify").cloned() {
+                    self.transition_button(ui, &tr);
+                }
+            });
+
+            self.lint_banner(ui);
+
+            // Plain-language mode banner — what mode you're in and why, so a
+            // non-technical user understands (and sees it applies to the AI too).
+            ui.add_space(2.0);
+            if self.mutable {
+                ui.colored_label(
+                    egui::Color32::from_rgb(120, 200, 140),
+                    "🔓 Edit mode — you can change this modpack. Changes save to your Setup; click Apply to install them into the game.",
+                );
+            } else {
+                ui.colored_label(
+                    egui::Color32::from_rgb(230, 180, 100),
+                    "🔒 Locked (view only) — nothing can change this modpack right now: not you, not the assistant. Switch to Edit (top-right) to make changes.",
+                );
+            }
+            ui.add_space(2.0);
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                // The tab bar is projected from the screen's Tab-kind transitions.
+                self.render_kind(ui, concierge_ui::WidgetKind::Tab);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(match self.central_tab {
+                        CentralTab::Declaration => "your setup · editable",
+                        CentralTab::Realised => "installed in the game · read-only",
+                    });
+                });
+            });
+            ui.separator();
+
+            match self.central_tab {
+                CentralTab::Declaration => {
+                    ui.horizontal(|ui| {
+                        ui.label("search:");
+                        // the filter box is projected from the screen's search field
+                        self.render_field(ui, "search");
+                        ui.separator();
+                        ui.add_enabled_ui(self.mutable, |ui| {
+                            // "+ add mod" projected from the add_open transition.
+                            if let Some(tr) = self.screen().transitions.iter().find(|t| t.id == "add_open").cloned() {
+                                self.transition_button(ui, &tr);
+                            }
+                            if let Some(tr) = self.screen().transitions.iter().find(|t| t.id == "open_browse").cloned() {
+                                self.transition_button(ui, &tr);
+                            }
+                        });
+                        if !self.mutable {
+                            ui.weak("🔒 locked — switch to Edit to change your setup");
+                        }
+                    });
+                    if self.add.open {
+                        self.add_form(ui);
+                    }
+                    ui.label("WHAT — the mods in this pack (identity + source):");
+                    self.mod_list(ui, &mods);
+                    // RELATIONAL — cross-mod concerns, kept distinct from the mods.
+                    if bethesda && !order.is_empty() {
+                        ui.separator();
+                        ui.strong(format!("How mods relate · {} ({} {})", lex.order, order.len(), lex.plugins));
+                        egui::ScrollArea::vertical()
+                            .id_salt("order")
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                for (i, p) in order.iter().enumerate() {
+                                    ui.monospace(format!("{i:>3}  {p}"));
+                                }
+                            });
+                    }
+                    if let Some(m) = &self.manifest {
+                        let r = &m.relations;
+                        if !r.requires.is_empty() || !r.incompatible.is_empty() || !r.provides.is_empty() {
+                            ui.separator();
+                            ui.strong("How mods relate · rules (needs / conflicts-with / provides)");
+                            for req in &r.requires {
+                                let v = req.min_version.as_deref().map_or_else(String::new, |v| format!(" >= {v}"));
+                                ui.monospace(format!("requires: {} needs {}{v}", req.name, req.needs));
+                            }
+                            for inc in &r.incompatible {
+                                ui.monospace(format!("incompatible: {} ✗ {}", inc.a, inc.b));
+                            }
+                            for p in &r.provides {
+                                ui.monospace(format!("provides: {} → {}", p.name, p.capability));
+                            }
+                        }
+                        if !r.patches.is_empty() || !r.rules.is_empty() {
+                            ui.separator();
+                            ui.strong("How mods relate · fixes (patches / overrides)");
+                            for p in &r.patches {
+                                ui.label(format!("patch '{}' bridges {}", p.name, p.bridges.join(" + ")));
+                            }
+                            for rule in &r.rules {
+                                ui.label(format!("rule: '{}' wins {}", rule.winner, rule.path));
+                            }
+                        }
+                        if !r.groups.is_empty() {
+                            ui.separator();
+                            ui.strong("How mods relate · load-order groups");
+                            for g in &r.groups {
+                                ui.label(if g.after.is_empty() {
+                                    format!("group '{}'", g.name)
+                                } else {
+                                    format!("group '{}' after {}", g.name, g.after.join(", "))
+                                });
+                            }
+                        }
+                        let c = &m.compat;
+                        let has_compat = c.game_version.is_some()
+                            || c.game_version_max.is_some()
+                            || !c.dlc.is_empty()
+                            || c.script_extender.is_some()
+                            || c.loader.is_some()
+                            || c.side.is_some();
+                        if has_compat {
+                            ui.separator();
+                            ui.strong("ENVIRONMENT · compat (what the pack needs)");
+                            if let Some(v) = &c.game_version {
+                                ui.monospace(format!("game >= {v}"));
+                            }
+                            if let Some(v) = &c.game_version_max {
+                                ui.monospace(format!("game <= {v}"));
+                            }
+                            if !c.dlc.is_empty() {
+                                ui.monospace(format!("DLC: {}", c.dlc.join(", ")));
+                            }
+                            if let Some(v) = &c.script_extender {
+                                ui.monospace(format!("script extender >= {v}"));
+                            }
+                            if let Some(v) = &c.loader {
+                                ui.monospace(format!("loader: {v} {}", c.loader_version.as_deref().unwrap_or("")));
+                            }
+                            if let Some(v) = &c.side {
+                                ui.monospace(format!("side: {v}"));
+                            }
+                        }
+                    }
+                }
+                CentralTab::Realised => {
+                    Self::realised_view(ui, &realized, &per_mod, &mods, synced, &realised_order, lex);
+                    ui.separator();
+                    self.generations_panel(ui);
+                    ui.separator();
+                    self.saves_panel(ui, busy);
+                }
+            }
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if let Some(tr) = self.screen().transitions.iter().find(|t| t.id == "open_preview").cloned() {
+                    self.transition_button(ui, &tr);
+                }
+                // The action-bar row is rendered FROM the concierge-ui Screen —
+                // the SAME view-model the headless text/automaton view uses — so
+                // its labels, enabled/guard state, and hovers can never drift
+                // from what an agent sees. Chrome (Preview/tabs/lock) stays put.
+                let bar: Vec<concierge_ui::Transition> = self
+                    .screen()
+                    .transitions
+                    .into_iter()
+                    .filter(|t| concierge_ui::is_action_bar(&t.id))
+                    .collect();
+                for tr in &bar {
+                    self.transition_button(ui, tr);
+                }
+                if busy {
+                    ui.spinner();
+                }
+            });
+        });
+
+        self.settings_panel(ctx);
+        self.diff_window(ctx);
+        self.browse_window(ctx);
+        self.confirm_modal(ctx);
+
+        if let Some(edit) = self.edit.take() {
+            self.apply(edit);
+        }
+
+        if busy || self.browse_busy || self.term.as_ref().is_some_and(|t| !t.finished()) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
+    }
+}
+
+impl App {
+    /// Top bar — projected from the Screen: game/profile selectors (selection
+    /// dispatches `select_game`/`select_profile`), rescan/delete/create-profile
+    /// buttons + the new-profile field as transitions/fields; the ⚙ gear
+    /// dispatches `open_settings`; theme + AI-column toggles stay hand-coded
+    /// (layout/aesthetics).
+    fn top_panel(&mut self, ctx: &eframe::egui::Context) {
+        use eframe::egui;
+        let screen = self.screen();
+        let games = screen.games.clone();
+        let profiles = screen.profiles.clone();
+        let (game_idx, profile_idx) = (screen.game_idx, screen.profile_idx);
+        let find = |id: &str| screen.transitions.iter().find(|t| t.id == id).cloned();
+        let (rescan_tr, delete_tr, undo_tr) =
+            (find("rescan"), find("delete_profile"), find("undo"));
+        let (empty_tr, clone_tr, ai_tr) = (
+            find("create_empty"),
+            find("create_clone"),
+            find("new_modpack_ai"),
+        );
+        let cache = self.cache;
+        let (settings_open, dark, ai_visible) = (self.settings_open, self.dark, self.ai_visible);
+        egui::TopBottomPanel::top("top").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Concierge");
+                ui.separator();
+                let mut gsel = game_idx;
+                egui::ComboBox::from_label("game")
+                    .selected_text(games.get(gsel).map_or("-", String::as_str))
+                    .show_ui(ui, |ui| {
+                        for (i, g) in games.iter().enumerate() {
+                            ui.selectable_value(&mut gsel, i, g);
+                        }
+                    });
+                if gsel != game_idx {
+                    self.dispatch_intent(&format!("select_game:{gsel}"));
+                }
+                let mut psel = profile_idx;
+                egui::ComboBox::from_label("profile")
+                    .selected_text(profiles.get(psel).map_or("-", String::as_str))
+                    .show_ui(ui, |ui| {
+                        for (i, p) in profiles.iter().enumerate() {
+                            ui.selectable_value(&mut psel, i, p);
+                        }
+                    });
+                if psel != profile_idx {
+                    self.dispatch_intent(&format!("select_profile:{psel}"));
+                }
+                if let Some(tr) = &rescan_tr {
+                    self.transition_button(ui, tr);
+                }
+                if let Some(tr) = &delete_tr {
+                    self.transition_button(ui, tr);
+                }
+                let (n, bytes) = cache;
+                ui.separator();
+                ui.label(format!("cache: {n}, {}", human_bytes(bytes)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .selectable_label(settings_open, "⚙")
+                        .on_hover_text("settings")
+                        .clicked()
+                    {
+                        self.dispatch_intent("open_settings");
+                    }
+                    self.render_kind(ui, concierge_ui::WidgetKind::Toggle);
+                    if ui
+                        .selectable_label(dark, if dark { "🌙" } else { "☀" })
+                        .on_hover_text("toggle theme")
+                        .clicked()
+                    {
+                        self.dark = !self.dark;
+                    }
+                    if ui
+                        .selectable_label(ai_visible, "🪄 AI")
+                        .on_hover_text("show/hide the AI assistant column")
+                        .clicked()
+                    {
+                        self.ai_visible = !self.ai_visible;
+                    }
+                    if let Some(tr) = &undo_tr {
+                        self.transition_button(ui, tr);
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label("new profile:");
+                self.render_field(ui, "new_profile");
+                if let Some(tr) = &empty_tr {
+                    self.transition_button(ui, tr);
+                }
+                if let Some(tr) = &clone_tr {
+                    self.transition_button(ui, tr);
+                }
+                if let Some(tr) = &ai_tr {
+                    self.transition_button(ui, tr);
+                }
+            });
+        });
+    }
+
+    /// Start (or focus) the sandboxed agent terminal for the ACTIVE profile:
+    /// `concierge shell --agent claude` in the profile dir, inside the
+    /// OS sandbox — the real interactive harness (permission prompts, plan
+    /// mode, skills).
+    fn start_agent_terminal(&mut self) {
+        let Some(dir) = self.profiles.get(self.profile_idx).map(|p| p.dir.clone()) else {
+            self.log.push("no active profile for the agent".to_owned());
+            return;
+        };
+        let concierge = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("concierge")))
+            .filter(|p| p.exists())
+            .map_or_else(|| "concierge".to_owned(), |p| p.display().to_string());
+        let agent = if which_agent_available() {
+            "claude"
+        } else {
+            "/bin/sh"
+        };
+        let cmd = vec![concierge, "shell".into(), "--agent".into(), agent.into()];
+        match terminal::PtyTerminal::spawn(&cmd, &dir, &[], 40, 100) {
+            Ok(t) => {
+                self.term = Some(t);
+                self.term_epoch = 0;
+                self.ai_visible = true;
+            }
+            Err(e) => self
+                .log
+                .push(format!("agent terminal failed to start: {e}")),
+        }
+    }
+
+    /// New-modpack flow: create the empty profile, switch to it, then open the
+    /// agent terminal there (the curator persona now lives in the provisioned
+    /// /curate slash-command, not a bespoke system prompt).
+    fn new_modpack_concierge(&mut self) {
+        let name = self.new_profile_name.trim().to_owned();
+        let Some(game) = self.games.get(self.game_idx).map(|g| g.dir.clone()) else {
+            return;
+        };
+        match profiles::create_profile(&game, &name, None) {
+            Ok(_) => {
+                self.new_profile_name.clear();
+                let target = self.profiles.len();
+                self.reload_profiles();
+                self.profile_idx = target.min(self.profiles.len().saturating_sub(1));
+                self.reload_plan();
+                self.start_agent_terminal();
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// Open the agent terminal on the active profile.
+    fn work_on_profile(&mut self) {
+        self.start_agent_terminal();
+    }
+
+    /// The AI assistant as a VSCode-style right-hand column: a header + quick
+    /// actions on top, the input pinned at the bottom, the chat transcript
+    /// filling the middle.
+    /// The agent view: an embedded terminal running the user's real agent in
+    /// the sandbox. When no session is running, an affordance to
+    /// start one; otherwise the live PTY grid with keystroke forwarding.
+    fn ai_column(&mut self, ctx: &eframe::egui::Context) {
+        use eframe::egui;
+        egui::SidePanel::right("ai")
+            .default_width(520.0)
+            .width_range(360.0..=900.0)
+            .show(ctx, |ui| {
+                egui::TopBottomPanel::top("ai_head").show_inside(ui, |ui| {
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.strong("AGENT TERMINAL");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let running = self.term.as_ref().is_some_and(|t| !t.finished());
+                            if running && ui.small_button("stop").clicked() {
+                                if let Some(t) = &self.term {
+                                    t.kill();
+                                }
+                            }
+                            if !running && self.term.is_some() && ui.small_button("close").clicked()
+                            {
+                                self.term = None;
+                            }
+                        });
+                    });
+                    ui.small(
+                        "sandboxed to Concierge's write-set — the agent can touch this \
+                         profile, never the pristine game or your machine",
+                    );
+                    if !self.mutable {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(230, 180, 100),
+                            "🔒 Locked — the manifest is read-only on disk; the agent can \
+                             read and audit but cannot edit it",
+                        );
+                    }
+                    ui.add_space(3.0);
+                });
+
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    let running = self.term.as_ref().is_some_and(|t| !t.finished());
+                    if self.term.is_none() {
+                        ui.add_space(8.0);
+                        if ui.button("▶ Start agent session").clicked() {
+                            self.start_agent_terminal();
+                        }
+                        ui.add_space(6.0);
+                        ui.weak(
+                            "Opens your agent (claude) in this profile folder, inside the \
+                             sandbox. It has CLAUDE.md + slash-commands: /health, /curate, \
+                             /audit-ids, /sort, /conflicts. You can also open a terminal \
+                             there yourself and get the exact same thing.",
+                        );
+                        if !which_agent_available() {
+                            ui.add_space(6.0);
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 170, 90),
+                                "claude CLI not found — a plain shell will open instead",
+                            );
+                        }
+                        return;
+                    }
+                    if running {
+                        self.forward_terminal_input(ui, ctx);
+                    } else {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(150, 190, 150),
+                            "agent session ended — Close to dismiss, or start a new one",
+                        );
+                    }
+                    self.render_terminal(ui);
+                });
+            });
+    }
+
+    /// Draw the PTY grid as monospaced rows. A styled cell-walk can
+    /// come later; plain text is the honest, testable baseline.
+    fn render_terminal(&mut self, ui: &mut eframe::egui::Ui) {
+        use eframe::egui;
+        // Match the PTY size to the panel so the agent's TUI lays out right.
+        let avail = ui.available_size();
+        let char_w = ui
+            .fonts(|f| f.glyph_width(&egui::FontId::monospace(12.0), 'M'))
+            .max(4.0);
+        let line_h = ui.text_style_height(&egui::TextStyle::Monospace).max(8.0);
+        let cols = f32_to_u16(avail.x / char_w, 40, 400);
+        let rows_n = f32_to_u16(avail.y / line_h, 10, 200);
+        if let Some(term) = &mut self.term {
+            term.resize(rows_n, cols);
+        }
+        let Some(term) = &self.term else { return };
+        let rows = term.text_rows();
+        egui::ScrollArea::vertical()
+            .id_salt("agentterm")
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                let mut body = rows.join("\n");
+                let text = egui::TextEdit::multiline(&mut body)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .interactive(false)
+                    .frame(false);
+                ui.add(text);
+            });
+    }
+
+    /// Collect this frame's keystrokes and forward them to the PTY.
+    fn forward_terminal_input(&mut self, ui: &eframe::egui::Ui, ctx: &eframe::egui::Context) {
+        let bytes = keystrokes_to_bytes(ui, ctx);
+        if !bytes.is_empty() {
+            if let Some(term) = &mut self.term {
+                term.send(&bytes);
+            }
+        }
+    }
+
+    fn lint_banner(&self, ui: &mut eframe::egui::Ui) {
+        use eframe::egui;
+        // Declared relational-fact issues (topology): unmet requires, active
+        // incompatibilities — distinct from resolver/invariant lints.
+        for issue in &self.rel_issues {
+            ui.colored_label(egui::Color32::from_rgb(220, 130, 110), format!("⚠ {issue}"));
+        }
+        let errors = self
+            .lint
+            .iter()
+            .filter(|v| v.severity == Severity::Error)
+            .count();
+        let warns = self.lint.len() - errors;
+        if errors == 0 && warns == 0 {
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            if errors > 0 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 80, 80),
+                    format!("✗ {errors} error(s)"),
+                );
+            }
+            if warns > 0 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 170, 90),
+                    format!("⚠ {warns} warning(s)"),
+                );
+            }
+        });
+        for v in &self.lint {
+            let c = if v.severity == Severity::Error {
+                egui::Color32::from_rgb(220, 120, 120)
+            } else {
+                egui::Color32::from_rgb(200, 170, 110)
+            };
+            ui.colored_label(c, format!("  {} [{}]: {}", v.subject, v.rule, v.detail));
+        }
+    }
+
+    /// Add-mod form — projected from the Screen: each text field via `render_field`
+    /// (`dispatch_type`), the "add to manifest" button via the `add_confirm` transition.
+    fn add_form(&mut self, ui: &mut eframe::egui::Ui) {
+        use eframe::egui;
+        let fields: Vec<(String, String)> = self
+            .screen()
+            .fields
+            .into_iter()
+            .filter(|f| f.id.starts_with("add_"))
+            .map(|f| (f.id, f.label))
+            .collect();
+        egui::Grid::new("addform").num_columns(2).show(ui, |ui| {
+            for (id, label) in &fields {
+                ui.label(label);
+                self.render_field(ui, id);
+                ui.end_row();
+            }
+        });
+        if let Some(tr) = self
+            .screen()
+            .transitions
+            .iter()
+            .find(|t| t.id == "add_confirm")
+            .cloned()
+        {
+            self.transition_button(ui, &tr);
+        }
+    }
+
+    /// The declaration's mod list — editable config (toggle / reorder / remove /
+    /// select). Reorder is gated off while a search filter is active, since the
+    /// displayed order isn't the real order then (MO2's rule).
+    fn mod_list(&mut self, ui: &mut eframe::egui::Ui, mods: &[Mod]) {
+        use eframe::egui;
+        let q = self.search.to_lowercase();
+        let mutable = self.mutable;
+        let can_reorder = q.is_empty() && mutable;
+        egui::ScrollArea::vertical()
+            .id_salt("mods")
+            .max_height(300.0)
+            .show(ui, |ui| {
+                egui::Grid::new("modsgrid")
+                    .striped(true)
+                    .num_columns(5)
+                    .show(ui, |ui| {
+                        ui.strong("on");
+                        ui.strong("mod");
+                        ui.strong("ver");
+                        ui.strong("src");
+                        ui.strong("");
+                        ui.end_row();
+                        let n = mods.len();
+                        for (i, m) in mods.iter().enumerate() {
+                            if !q.is_empty() && !m.name.to_lowercase().contains(&q) {
+                                continue;
+                            }
+                            let mut en = m.enabled;
+                            if ui
+                                .add_enabled(mutable, egui::Checkbox::new(&mut en, ""))
+                                .changed()
+                            {
+                                // route through dispatch: App mutates only via intents
+                                self.dispatch_intent(&format!("mod_toggle:{}", m.name));
+                            }
+                            let sel = self.selected.as_deref() == Some(&m.name);
+                            // Every mutation below routes through dispatch_intent — the
+                            // App is never mutated directly from the row (only drag
+                            // DETECTION stays here; its result dispatches mod_move).
+                            if can_reorder {
+                                let dnd =
+                                    ui.dnd_drag_source(egui::Id::new(("dragmod", i)), i, |ui| {
+                                        let _ = ui.selectable_label(sel, &m.name);
+                                    });
+                                if dnd.response.clicked() {
+                                    self.dispatch_intent(&format!("mod_select:{}", m.name));
+                                }
+                                if let Some(from) = dnd.response.dnd_release_payload::<usize>() {
+                                    if *from != i {
+                                        self.dispatch_intent(&format!("mod_move:{from}:{i}"));
+                                    }
+                                }
+                            } else if ui.selectable_label(sel, &m.name).clicked() {
+                                self.dispatch_intent(&format!("mod_select:{}", m.name));
+                            }
+                            ui.label(&m.version);
+                            ui.label(mod_source(m));
+                            ui.horizontal(|ui| {
+                                self.row_btn(
+                                    ui,
+                                    &format!("mod_up:{}", m.name),
+                                    "↑",
+                                    can_reorder && i > 0,
+                                );
+                                self.row_btn(
+                                    ui,
+                                    &format!("mod_down:{}", m.name),
+                                    "↓",
+                                    can_reorder && i + 1 < n,
+                                );
+                                self.row_btn(ui, &format!("mod_remove:{}", m.name), "🗑", mutable);
+                            });
+                            ui.end_row();
+                        }
+                        if mods.is_empty() {
+                            ui.label("(no mods — use + add mod)");
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+
+    /// The realised generation — READ-ONLY. What is actually deployed on disk:
+    /// the generation hash, deployed file counts per mod, and whether each
+    /// deployed mod is still in the declaration (else it's orphaned drift).
+    fn realised_view(
+        ui: &mut eframe::egui::Ui,
+        realized: &Realized,
+        per_mod: &std::collections::BTreeMap<String, usize>,
+        mods: &[Mod],
+        synced: bool,
+        deployed_order: &[String],
+        lex: concierge::game::Lexicon,
+    ) {
+        use eframe::egui;
+        let Some(hash) = realized.plan_hash.as_deref() else {
+            ui.add_space(10.0);
+            ui.weak("Nothing installed yet.");
+            ui.label("Set up your mods, then click Apply to install them.");
+            return;
+        };
+        let short: String = hash.chars().take(12).collect();
+        ui.horizontal(|ui| {
+            ui.strong("version");
+            ui.monospace(short);
+            ui.separator();
+            ui.label(format!("{} files deployed", realized.files.len()));
+        });
+        ui.colored_label(
+            if synced {
+                egui::Color32::from_rgb(120, 190, 120)
+            } else {
+                egui::Color32::from_rgb(220, 170, 90)
+            },
+            if synced {
+                "matches the current declaration"
+            } else {
+                "the declaration has changed — Realize to update this generation"
+            },
+        );
+        ui.weak("Read-only: this is what is deployed on disk. Change it by editing the Declaration and rebuilding.");
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .id_salt("realised")
+            .max_height(340.0)
+            .show(ui, |ui| {
+                egui::Grid::new("realisedgrid")
+                    .striped(true)
+                    .num_columns(3)
+                    .show(ui, |ui| {
+                        ui.strong("mod");
+                        ui.strong("files");
+                        ui.strong("in setup");
+                        ui.end_row();
+                        for (name, count) in per_mod {
+                            ui.label(name);
+                            ui.label(count.to_string());
+                            if mods.iter().any(|m| &m.name == name && m.enabled) {
+                                ui.label("declared");
+                            } else {
+                                ui.colored_label(egui::Color32::from_rgb(220, 170, 90), "orphaned");
+                            }
+                            ui.end_row();
+                        }
+                        if per_mod.is_empty() {
+                            ui.label("(no owned files)");
+                            ui.end_row();
+                        }
+                    });
+            });
+        if !deployed_order.is_empty() {
+            ui.separator();
+            ui.strong(format!(
+                "installed {} — on-disk plugins.txt ({})",
+                lex.order,
+                deployed_order.len()
+            ));
+            egui::ScrollArea::vertical()
+                .id_salt("deployed_order")
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    for (i, p) in deployed_order.iter().enumerate() {
+                        ui.monospace(format!("{i:>3}  {p}"));
+                    }
+                });
+        }
+    }
+
+    /// Save-game backups (safety), with restore of a versioned generation. Not
+    /// part of the read-only realised projection — this is a data-recovery
+    /// action distinct from the deployed generation.
+    /// Save-backup list — projected: each backup + its restore button (the
+    /// `restore_save:<g>` transition).
+    fn saves_panel(&mut self, ui: &mut eframe::egui::Ui, _busy: bool) {
+        use eframe::egui;
+        let screen = self.screen();
+        let saves = screen.saves.clone();
+        ui.horizontal(|ui| {
+            ui.strong("save backups");
+            ui.weak(format!("{} version(s)", saves.len()));
+        });
+        if saves.is_empty() {
+            ui.weak("Saves are snapshotted automatically before every rebuild.");
+            return;
+        }
+        let rows: Vec<(String, Option<concierge_ui::Transition>)> = saves
+            .iter()
+            .map(|g| {
+                (
+                    g.clone(),
+                    screen
+                        .transitions
+                        .iter()
+                        .find(|t| t.id == format!("restore_save:{g}"))
+                        .cloned(),
+                )
+            })
+            .collect();
+        egui::ScrollArea::vertical()
+            .id_salt("saves")
+            .max_height(110.0)
+            .show(ui, |ui| {
+                for (g, tr) in &rows {
+                    ui.horizontal(|ui| {
+                        ui.monospace(g);
+                        if let Some(tr) = tr {
+                            self.transition_button(ui, tr);
+                        }
+                    });
+                }
+            });
+    }
+
+    /// Restore a save generation on a worker thread, logging the outcome.
+    fn restore_save(&self, generation: String) {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (Some(repo), Some(plan)) = (self.active_repo(), self.plan.clone()) else {
+            self.busy.store(false, Ordering::SeqCst);
+            return;
+        };
+        let tx = self.log_tx.clone();
+        let busy = Arc::clone(&self.busy);
+        std::thread::spawn(move || {
+            let _ = tx.send(format!("> restore saves from generation {generation}"));
+            match concierge::saves::restore(&repo, &plan, &generation) {
+                Ok(n) => {
+                    let _ = tx.send(format!("restored {n} save file(s)"));
+                }
+                Err(e) => {
+                    let _ = tx.send(format!("restore failed: {e}"));
+                }
+            }
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// Settings editor — game paths (from the manifest), API-key status, and
+    /// app preferences.
+    /// Kick off the Nexus `whoami` off the UI thread (dispatched by `check_account`).
+    fn check_account(&self) {
+        if let Ok(mut s) = self.nexus_account.lock() {
+            "checking…".clone_into(&mut s);
+        }
+        let slot = Arc::clone(&self.nexus_account);
+        std::thread::spawn(move || {
+            let status = match concierge::nexus::api_key() {
+                Ok(k) => match concierge::nexus::validate(&k) {
+                    Ok(u) if u.is_premium => {
+                        format!("Premium ({}) — downloads are automatic.", u.name)
+                    }
+                    Ok(u) => format!(
+                        "Free ({}) — Nexus requires one click per uncached mod ('Mod Manager \
+                         Download'); the API key is only for metadata + the click token, not bulk \
+                         download.",
+                        u.name
+                    ),
+                    Err(e) => format!("key set but validate failed: {e}"),
+                },
+                Err(_) => "No API key — optional (catalog/tracked/updates). Downloads still work \
+                           via click or ~/Downloads."
+                    .to_owned(),
+            };
+            if let Ok(mut s) = slot.lock() {
+                *s = status;
+            }
+        });
+    }
+
+    /// Settings window — projected from the Screen: the info is the `settings`
+    /// panel, the Check-account button is the Settings state's `check_account`
+    /// transition; only the theme/layout preferences stay hand-coded (aesthetics).
+    fn settings_panel(&mut self, ctx: &eframe::egui::Context) {
+        use eframe::egui;
+        let mut open = self.settings_open;
+        let screen = self.screen();
+        let panel = screen.panels.iter().find(|p| p.id == "settings").cloned();
+        let check = screen
+            .transitions
+            .iter()
+            .find(|t| t.id == "check_account")
+            .cloned();
+        egui::Window::new("⚙ Settings")
+            .open(&mut open)
+            .resizable(true)
+            .show(ctx, |ui| {
+                if let Some(p) = &panel {
+                    for line in &p.lines {
+                        if line.starts_with("  ") {
+                            ui.monospace(line.trim_start());
+                        } else {
+                            ui.label(line);
+                        }
+                    }
+                }
+                ui.separator();
+                if let Some(tr) = &check {
+                    self.transition_button(ui, tr);
+                }
+                ui.separator();
+                ui.strong("preferences");
+                ui.checkbox(&mut self.dark, "dark theme");
+                ui.checkbox(&mut self.ai_visible, "show AI assistant column");
+            });
+        self.settings_open = open;
+    }
+
+    /// `ApplyDiff` preview — a dry look at what Realize will change (declaration
+    /// vs realised generation), before anything is written.
+    /// Preview window — a read-only projection of the `preview` panel (the diff
+    /// summary is computed in `build_panels`). Line colouring is the renderer's
+    /// aesthetic call; the window's X projects the `close_preview` transition.
+    fn diff_window(&mut self, ctx: &eframe::egui::Context) {
+        use eframe::egui;
+        let mut open = self.diff_open;
+        let panel = self.screen().panels.into_iter().find(|p| p.id == "preview");
+        egui::Window::new("Preview changes")
+            .open(&mut open)
+            .resizable(true)
+            .show(ctx, |ui| {
+                if let Some(p) = &panel {
+                    for line in &p.lines {
+                        let color = if line.starts_with('+') || line.trim_start().starts_with('+') {
+                            Some(egui::Color32::from_rgb(120, 190, 120))
+                        } else if line.starts_with('-') || line.trim_start().starts_with('-') {
+                            Some(egui::Color32::from_rgb(220, 120, 120))
+                        } else if line.starts_with('~') {
+                            Some(egui::Color32::from_rgb(220, 170, 90))
+                        } else {
+                            None
+                        };
+                        match color {
+                            Some(c) => {
+                                ui.colored_label(c, line);
+                            }
+                            None if line.starts_with("   ") => {
+                                ui.monospace(line.trim_start());
+                            }
+                            None => {
+                                ui.label(line);
+                            }
+                        }
+                    }
+                }
+            });
+        self.diff_open = open;
+    }
+
+    /// Integrated mod browser — search the local Nexus catalog and add a hit to
+    /// the declaration.
+    /// Browse window — projected from the Screen: the query + nxm text fields,
+    /// the search + add-nxm buttons, the browse message panel, and one add button
+    /// per result row (the `add_hit:<id>` transitions).
+    fn browse_window(&mut self, ctx: &eframe::egui::Context) {
+        use eframe::egui;
+        let mut open = self.browse_open;
+        let screen = self.screen();
+        let find = |id: &str| screen.transitions.iter().find(|t| t.id == id).cloned();
+        let search_tr = find("browse_search");
+        let nxm_tr = find("nxm_add");
+        let msg = screen
+            .panels
+            .iter()
+            .find(|p| p.id == "browse")
+            .map(|p| p.lines.join(" "));
+        let rows: Vec<(concierge_ui::BrowseHit, Option<concierge_ui::Transition>)> = screen
+            .browse_hits
+            .iter()
+            .map(|h| (h.clone(), find(&format!("add_hit:{}", h.mod_id))))
+            .collect();
+        // The status line reads a CACHED (rows, synced) — the worker refreshes
+        // it; the window never touches the catalog during a repaint.
+        let status = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.game.nexus_domain.clone())
+            .map(|d| (d, self.browse_status));
+        egui::Window::new("Browse mods (Nexus catalog)")
+            .open(&mut open)
+            .default_width(560.0)
+            .default_height(560.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                // Catalog sync affordance — fixes the dead-end "is the catalog
+                // synced?" by saying so and offering the fix in place.
+                if let Some((d, (rows_n, synced))) = &status {
+                    ui.horizontal(|ui| {
+                        if *rows_n == 0 {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 170, 90),
+                                format!("catalog for {d}: never synced"),
+                            );
+                        } else {
+                            ui.weak(format!("catalog: {rows_n} mods, synced {}", ago(*synced)));
+                        }
+                        if ui
+                            .button("⟳ Sync now")
+                            .on_hover_text("concierge db sync — fetches the public Nexus catalog")
+                            .clicked()
+                        {
+                            self.sync_catalog(d.clone());
+                        }
+                    });
+                    ui.separator();
+                }
+                ui.horizontal(|ui| {
+                    self.render_field(ui, "browse_query");
+                    if let Some(tr) = &search_tr {
+                        self.transition_button(ui, tr);
+                    }
+                });
+                // First-class category filter + sort — the normal Nexus controls.
+                self.browse_filters(ui);
+                ui.horizontal(|ui| {
+                    ui.label("or paste an nxm:// link:");
+                    self.render_field(ui, "nxm_input");
+                    if let Some(tr) = &nxm_tr {
+                        self.transition_button(ui, tr);
+                    }
+                });
+                if let Some(m) = &msg {
+                    if !m.is_empty() {
+                        ui.weak(m);
+                    }
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if self.browse_busy {
+                        ui.spinner();
+                        ui.weak("loading catalog…");
+                    } else {
+                        ui.weak(format!("{} result(s)", rows.len()));
+                        if self.browse_category.is_some()
+                            || self.browse_sort != concierge_ai::tools::SortBy::Endorsements
+                        {
+                            ui.weak("·");
+                            if let Some(c) = &self.browse_category {
+                                ui.weak(format!("category: {c}"));
+                            }
+                            ui.weak(self.browse_sort.label());
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                // Nexus-style card grid: one mod page-like card per hit. The green
+                // Nexus "download" is replaced by "＋ Add to manifest" (declarative
+                // curation — nothing is downloaded here).
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (hit, add) in &rows {
+                            self.browse_card(ui, hit, add.as_ref());
+                            ui.add_space(8.0);
+                        }
+                    });
+            });
+        self.browse_open = open;
+    }
+
+    /// The category filter + sort controls — first-class, above the results.
+    /// Changing either re-runs the search immediately.
+    fn browse_filters(&mut self, ui: &mut eframe::egui::Ui) {
+        use concierge_ai::tools::SortBy;
+        use eframe::egui;
+        let mut changed = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("category:");
+            let current = self.browse_category.clone();
+            let label = current.as_deref().unwrap_or("All categories");
+            egui::ComboBox::from_id_salt("browse_cat")
+                .selected_text(label)
+                .width(190.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(current.is_none(), "All categories")
+                        .clicked()
+                    {
+                        self.browse_category = None;
+                        changed = true;
+                    }
+                    for (cat, n) in &self.browse_categories {
+                        let sel = current.as_deref() == Some(cat.as_str());
+                        if ui.selectable_label(sel, format!("{cat}  ({n})")).clicked() {
+                            self.browse_category = Some(cat.clone());
+                            changed = true;
+                        }
+                    }
+                });
+
+            ui.add_space(8.0);
+            ui.label("sort:");
+            egui::ComboBox::from_id_salt("browse_sort")
+                .selected_text(self.browse_sort.label())
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for opt in SortBy::all() {
+                        if ui
+                            .selectable_label(self.browse_sort == opt, opt.label())
+                            .clicked()
+                        {
+                            self.browse_sort = opt;
+                            changed = true;
+                        }
+                    }
+                });
+
+            if (self.browse_category.is_some() || self.browse_sort != SortBy::Endorsements)
+                && ui.button("clear").clicked()
+            {
+                self.browse_category = None;
+                self.browse_sort = SortBy::Endorsements;
+                changed = true;
+            }
+        });
+        if changed {
+            self.do_browse_search();
+        }
+    }
+
+    /// One Nexus-style mod card: a placeholder thumbnail tile (we don't scrape
+    /// or redistribute Nexus images), the title, author, category chip, stats
+    /// (endorsements / downloads / updated), a summary, and the add action.
+    fn browse_card(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        hit: &concierge_ui::BrowseHit,
+        add: Option<&concierge_ui::Transition>,
+    ) {
+        use eframe::egui;
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().faint_bg_color)
+            .corner_radius(6)
+            .inner_margin(egui::Margin::same(8))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // Thumbnail placeholder tile (initial letter) — image-free,
+                    // AUP-safe.
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+                    ui.painter()
+                        .rect_filled(rect, 4.0, egui::Color32::from_gray(60));
+                    let letter = hit
+                        .name
+                        .chars()
+                        .next()
+                        .unwrap_or('?')
+                        .to_uppercase()
+                        .to_string();
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        letter,
+                        egui::FontId::proportional(28.0),
+                        egui::Color32::from_gray(180),
+                    );
+                    ui.add_space(6.0);
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(egui::RichText::new(&hit.name).size(15.0));
+                            if !hit.author.is_empty() {
+                                ui.weak(format!("by {}", hit.author));
+                            }
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            if !hit.category.is_empty() {
+                                chip(ui, &hit.category);
+                            }
+                            ui.weak(format!("▲ {}", human_count(hit.endorsements)));
+                            ui.weak(format!("⭳ {}", human_count(hit.downloads)));
+                            if !hit.updated_at.is_empty() {
+                                ui.weak(format!(
+                                    "· {}",
+                                    hit.updated_at.split('T').next().unwrap_or("")
+                                ));
+                            }
+                        });
+                        if !hit.summary.is_empty() {
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(&hit.summary).weak()).wrap(),
+                            );
+                        }
+                        ui.add_space(4.0);
+                        // The add-to-manifest action, styled green like Nexus'
+                        // download button; "added" shows a disabled confirmation.
+                        if hit.added {
+                            ui.add_enabled(false, egui::Button::new("✓ In manifest"));
+                        } else if let Some(tr) = add {
+                            let btn = egui::Button::new(
+                                egui::RichText::new("＋ Add to manifest")
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(egui::Color32::from_rgb(78, 141, 74));
+                            if ui
+                                .add_enabled(tr.enabled, btn)
+                                .on_hover_text("append a [[mod]] and pin its main file")
+                                .clicked()
+                            {
+                                self.dispatch_intent(&tr.id);
+                            }
+                        }
+                    });
+                });
+            });
+    }
+
+    /// Add a catalog hit to the declaration, auto-resolving its main Nexus file
+    /// so it's pinned-ready (the resolve step of resolve → download → pin).
+    /// Add a catalog hit — resolving its main Nexus file (network) OFF the UI
+    /// thread, then appending the pinned-ready `[[mod]]` atomically.
+    /// Add a catalog hit to the manifest. Each add runs on its OWN thread and
+    /// serializes only the manifest append (via `ADD_LOCK`) — it does NOT take
+    /// the shared busy flag, so rapid/concurrent adds all complete instead of
+    /// the second being silently dropped.
+    fn add_catalog_hit(&self, mod_id: u64, name: &str) {
+        let Some(repo) = self.active_repo() else {
+            return;
+        };
+        let domain = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.game.nexus_domain.clone())
+            .unwrap_or_default();
+        let name = name.to_owned();
+        let (tx, reload) = (self.log_tx.clone(), Arc::clone(&self.reload_pending));
+        let _ = tx.send(format!("adding {name}…"));
+        std::thread::spawn(move || {
+            // Resolve the main file: id + filename + the actual version.
+            let (file_id, file, version) = concierge::nexus::api_key()
+                .and_then(|k| concierge::nexus::main_file(&k, &domain, mod_id))
+                .map_or_else(
+                    |e| {
+                        let _ = tx.send(format!(
+                            "add {name}: couldn't resolve file ({e}) — unpinned"
+                        ));
+                        (0, String::new(), String::new())
+                    },
+                    |f| {
+                        (
+                            u32::try_from(f.file_id).unwrap_or(0),
+                            f.file_name,
+                            f.version.unwrap_or_default(),
+                        )
+                    },
+                );
+            let entry = nexus_new_mod(
+                name.clone(),
+                mod_id,
+                u64::from(file_id),
+                String::new(),
+                file,
+                version,
+            );
+            write_added_mod(&repo, &entry, &tx, &reload);
+            // The id came straight from the catalog, so the entry is audit-OK
+            // by construction — record it so eval/realize don't flag it
+            // unaudited (the browser feeds the audit gate).
+            record_audit_ok(&repo, mod_id, &name);
+        });
+    }
+
+    /// Sync the catalog for `domain` off-thread (the browser's "Sync now").
+    fn sync_catalog(&self, domain: String) {
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(repo) = self.active_repo() else {
+            self.busy.store(false, Ordering::SeqCst);
+            return;
+        };
+        let (tx, busy, refresh) = (
+            self.log_tx.clone(),
+            Arc::clone(&self.busy),
+            Arc::clone(&self.browse_refresh),
+        );
+        std::thread::spawn(move || {
+            let _ = tx.send(format!("> syncing {domain} catalog…"));
+            match concierge_db::catalog::Catalog::open(&repo.catalog_path()) {
+                Ok(mut cat) => match concierge_db::sync::sync_game(&mut cat, &domain, &mut |l| {
+                    let _ = tx.send(l.to_owned());
+                }) {
+                    Ok(r) => {
+                        let _ = tx.send(format!("catalog synced: {} rows", r.rows_synced));
+                        refresh.store(true, Ordering::SeqCst); // re-search with fresh data
+                    }
+                    Err(e) => {
+                        let _ = tx.send(format!("catalog sync failed: {e}"));
+                    }
+                },
+                Err(e) => {
+                    let _ = tx.send(format!("catalog open failed: {e}"));
+                }
+            }
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// Handle an `nxm://` link (from the site's "Mod Manager Download" button).
+    /// If it carries the click token, download the file with it now (free-user,
+    /// one-click, TOS-sanctioned) and add the mod pinned to that exact hash;
+    /// otherwise add it unpinned. The token download blocks briefly — it's a
+    /// deliberate click, and it's the sanctioned free-download path.
+    fn handle_nxm(&mut self, url: &str) {
+        let Some(n) = concierge::nexus::parse_nxm(url) else {
+            self.error = Some(format!("not a valid nxm:// link: {url}"));
+            return;
+        };
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(repo) = self.active_repo() else {
+            self.busy.store(false, Ordering::SeqCst);
+            return;
+        };
+        let (tx, busy, reload) = (
+            self.log_tx.clone(),
+            Arc::clone(&self.busy),
+            Arc::clone(&self.reload_pending),
+        );
+        // Download (network) + manifest write happen OFF the UI thread.
+        std::thread::spawn(move || {
+            let _ = tx.send(format!("> nxm {} file {}", n.mod_id, n.file_id));
+            let name = concierge_ai::tools::catalog_names(&repo, &n.domain, &[n.mod_id])
+                .ok()
+                .and_then(|v| v.into_iter().next().map(|(_, mn)| mn))
+                .unwrap_or_else(|| format!("nexus-mod-{}", n.mod_id));
+            let (mut md5, mut file) = (String::new(), String::new());
+            if let (Some(k), Some(exp), Ok(api)) = (&n.key, &n.expires, concierge::nexus::api_key())
+            {
+                match concierge::store::acquire_nxm(
+                    &repo, &n.domain, n.mod_id, n.file_id, &api, k, exp,
+                ) {
+                    Ok((got, fname)) => {
+                        let _ = tx.send(format!("nxm: downloaded + pinned '{fname}' (md5 {got})"));
+                        md5 = got;
+                        file = fname;
+                    }
+                    Err(e) => {
+                        let _ =
+                            tx.send(format!("nxm: token download failed ({e}); adding unpinned"));
+                    }
+                }
+            }
+            // nxm links don't carry the mod version; leave it to default ("1")
+            // until a fetch/resolve fills it in.
+            let entry = nexus_new_mod(name, n.mod_id, n.file_id, md5, file, String::new());
+            write_added_mod(&repo, &entry, &tx, &reload);
+            busy.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// Kick off a catalog read on a WORKER THREAD — the query + the categories
+    /// GROUP BY over a 75k-row catalog must never block the UI. Results arrive
+    /// via `browse_rx`, tagged with `browse_seq`; a later search supersedes an
+    /// in-flight one (stale results are dropped in `update`).
+    fn do_browse_search(&mut self) {
+        let Some(repo) = self.active_repo() else {
+            return;
+        };
+        let domain = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.game.nexus_domain.clone())
+            .unwrap_or_default();
+        if domain.is_empty() {
+            self.browse_hits.clear();
+            "this game has no Nexus catalog domain".clone_into(&mut self.browse_msg);
+            return;
+        }
+        self.browse_seq += 1;
+        self.browse_busy = true;
+        let seq = self.browse_seq;
+        let filter = self
+            .manifest
+            .as_ref()
+            .map_or_else(CatalogFilter::default, |m| {
+                CatalogFilter::from_curate(&m.curate)
+            });
+        let query = self.browse_query.clone();
+        let category = self.browse_category.clone();
+        let sort = self.browse_sort;
+        let need_cats = self.browse_categories.is_empty();
+        let tx = self.browse_tx.clone();
+        std::thread::spawn(move || {
+            let categories =
+                need_cats.then(|| concierge_ai::tools::catalog_categories(&repo, &domain));
+            let status = concierge_ai::tools::catalog_status(&repo, &domain);
+            let result = match concierge_ai::tools::catalog_search_sorted(
+                &repo,
+                &domain,
+                &query,
+                50,
+                &filter,
+                category.as_deref(),
+                sort,
+            ) {
+                Ok(hits) => {
+                    let msg = if hits.is_empty() {
+                        if status.0 > 0 {
+                            "no matches — try a different search, category, or clear filters"
+                        } else {
+                            "catalog not synced yet — click Sync now above"
+                        }
+                        .to_owned()
+                    } else {
+                        String::new()
+                    };
+                    BrowseResult {
+                        hits,
+                        categories,
+                        msg,
+                        status,
+                    }
+                }
+                Err(e) => BrowseResult {
+                    hits: Vec::new(),
+                    categories,
+                    msg: format!("search failed: {e}"),
+                    status,
+                },
+            };
+            let _ = tx.send((seq, result));
+        });
+    }
+
+    /// Modal confirmation for destructive actions (co-located guard at each
+    /// destructive call site; nothing destructive runs without passing here).
+    fn confirm_modal(&mut self, ctx: &eframe::egui::Context) {
+        use eframe::egui;
+        if self.confirm.is_none() {
+            return;
+        }
+        // Projected from the screen: the prompt is the banner, and the Cancel /
+        // Confirm buttons ARE the Confirming state's transitions (confirm_no,
+        // confirm_yes) — dispatched like every other widget.
+        let screen = self.screen();
+        let prompt = screen.banner.clone().unwrap_or_default();
+        let buttons: Vec<concierge_ui::Transition> = ["confirm_no", "confirm_yes"]
+            .iter()
+            .filter_map(|id| screen.transitions.iter().find(|t| &t.id == id).cloned())
+            .collect();
+        egui::Window::new("Confirm")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(prompt);
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    for tr in &buttons {
+                        self.transition_button(ui, tr);
+                    }
+                });
+            });
+    }
+
+    fn execute_confirm(&mut self, c: Confirm) {
+        match c {
+            Confirm::RemoveMod(n) => self.apply(Edit::Remove(n)),
+            Confirm::Undeploy => self.run_action("undeploy", Action::Undeploy),
+            Confirm::RestoreSave(g) => self.restore_save(g),
+            Confirm::Rollback(n) => self.rollback_generation(n),
+            Confirm::DeleteProfile(_) => self.delete_active_profile(),
+        }
+    }
+
+    /// Delete the active profile (whole directory) and reselect a sibling.
+    fn delete_active_profile(&mut self) {
+        let Some(dir) = self.profiles.get(self.profile_idx).map(|p| p.dir.clone()) else {
+            return;
+        };
+        match profiles::delete_profile(&dir) {
+            Ok(()) => {
+                self.selected = None;
+                self.profile_idx = self.profile_idx.saturating_sub(1);
+                self.reload_profiles();
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    /// Roll the declaration back to a recorded generation (Nix-style).
+    fn rollback_generation(&mut self, number: u64) {
+        let Some(repo) = self.active_repo() else {
+            return;
+        };
+        match concierge::generations::rollback(&repo, number) {
+            Ok(_) => {
+                self.undo.clear();
+                let _ = self
+                    .log_tx
+                    .send(format!("rolled back to generation {number}"));
+                self.reload_plan();
+            }
+            Err(e) => self.error = Some(format!("rollback: {e}")),
+        }
+    }
+
+    /// Declaration generations (Nix-style version control) with rollback.
+    /// Setup-versions list — projected: the pinned-versions status + each version
+    /// + its roll-back button (the `rollback:<n>` transition).
+    fn generations_panel(&mut self, ui: &mut eframe::egui::Ui) {
+        use eframe::egui;
+        let screen = self.screen();
+        if let Some(p) = &screen.pin_status {
+            ui.weak(p.as_str());
+            ui.separator();
+        }
+        let versions = screen.versions.clone();
+        ui.horizontal(|ui| {
+            ui.strong("setup versions");
+            ui.weak(format!("{}", versions.len()));
+        });
+        if versions.is_empty() {
+            ui.weak("Each Apply saves a version of your Setup you can restore.");
+            return;
+        }
+        let rows: Vec<(concierge_ui::VersionRow, Option<concierge_ui::Transition>)> = versions
+            .iter()
+            .map(|v| {
+                (
+                    v.clone(),
+                    screen
+                        .transitions
+                        .iter()
+                        .find(|t| t.id == format!("rollback:{}", v.number))
+                        .cloned(),
+                )
+            })
+            .collect();
+        egui::ScrollArea::vertical()
+            .id_salt("gens")
+            .max_height(120.0)
+            .show(ui, |ui| {
+                for (v, tr) in &rows {
+                    ui.horizontal(|ui| {
+                        ui.monospace(format!("gen {}", v.number));
+                        ui.weak(&v.hash);
+                        if let Some(tr) = tr {
+                            self.transition_button(ui, tr);
+                        }
+                    });
+                }
+            });
+    }
+
+    fn details_panel(
+        &self,
+        ui: &mut eframe::egui::Ui,
+        mods: &[Mod],
+        per_mod: &std::collections::BTreeMap<String, usize>,
+    ) {
+        use eframe::egui;
+        ui.strong("details");
+        ui.separator();
+        let Some(name) = &self.selected else {
+            ui.label("select a mod");
+            return;
+        };
+        let Some(m) = mods.iter().find(|m| &m.name == name) else {
+            ui.label("(not found)");
+            return;
+        };
+        egui::Grid::new("det").num_columns(2).show(ui, |ui| {
+            ui.label("name");
+            ui.label(&m.name);
+            ui.end_row();
+            ui.label("version");
+            ui.label(&m.version);
+            ui.end_row();
+            ui.label("enabled");
+            ui.label(if m.enabled { "yes" } else { "no" });
+            ui.end_row();
+            ui.label("source");
+            ui.label(mod_source(m));
+            ui.end_row();
+            if let Some(id) = m.nexus_mod_id {
+                ui.label("nexus");
+                ui.label(format!("{id} / {}", m.nexus_file_id.unwrap_or(0)));
+                ui.end_row();
+            }
+            if let Some(u) = &m.url {
+                ui.label("url");
+                ui.label(u);
+                ui.end_row();
+            }
+            ui.label("md5");
+            ui.label(if m.md5.is_empty() {
+                "UNPINNED".to_owned()
+            } else {
+                m.md5.clone()
+            });
+            ui.end_row();
+            ui.label("files");
+            ui.label(
+                per_mod
+                    .get(&m.name)
+                    .map_or_else(|| "not deployed".to_owned(), |c| format!("{c} deployed")),
+            );
+            ui.end_row();
+        });
+        if !m.plugins.is_empty() {
+            ui.separator();
+            ui.strong("config · provides (plugins)");
+            for p in &m.plugins {
+                ui.monospace(p);
+            }
+        }
+        if !m.choices.is_empty() {
+            ui.separator();
+            ui.strong("config · install choices");
+            for ch in &m.choices {
+                ui.label(format!("{} ({})", ch.name, ch.select));
+                for opt in &ch.options {
+                    ui.monospace(format!(
+                        "  [{}] {}",
+                        if opt.selected { "x" } else { " " },
+                        opt.label
+                    ));
+                }
+            }
+        }
+        if !m.options.is_empty() {
+            ui.separator();
+            ui.strong("config · options");
+            for (k, v) in &m.options {
+                ui.monospace(format!("{k} = {v}"));
+            }
+        }
+        let meta = &m.meta;
+        let has_meta = meta.author.is_some()
+            || meta.category.is_some()
+            || !meta.tags.is_empty()
+            || meta.nsfw
+            || meta.license.is_some()
+            || meta.website.is_some();
+        if has_meta || m.group.is_some() || !m.mirrors.is_empty() || m.sha512.is_some() {
+            ui.separator();
+            ui.strong("metadata & trust");
+            if let Some(a) = &meta.author {
+                ui.label(format!("author: {a}"));
+            }
+            if let Some(c) = &meta.category {
+                ui.label(format!("category: {c}"));
+            }
+            if !meta.tags.is_empty() {
+                ui.label(format!("tags: {}", meta.tags.join(", ")));
+            }
+            if meta.nsfw {
+                ui.colored_label(egui::Color32::from_rgb(220, 130, 130), "NSFW");
+            }
+            if let Some(l) = &meta.license {
+                ui.label(format!("license: {l}"));
+            }
+            if let Some(g) = &m.group {
+                ui.label(format!("group: {g}"));
+            }
+            if !m.mirrors.is_empty() {
+                ui.label(format!("mirrors: {}", m.mirrors.len()));
+            }
+            if m.sha512.is_some() {
+                ui.label("sha512: pinned");
+            }
+        }
+    }
+}

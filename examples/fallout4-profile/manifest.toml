@@ -1,0 +1,59 @@
+# Example Fallout 4 profile. Copy it somewhere writable, point the paths at
+# your install, and run `concierge eval` / `concierge realize` with
+# CONCIERGE_REPO set to the profile directory:
+#
+#   cp -r examples/fallout4-profile my-pack
+#   $EDITOR my-pack/manifest.toml       # set the three paths below
+#   CONCIERGE_REPO=my-pack concierge eval
+#
+# The pristine install is never written: `realize` clones it into `instance`
+# (copy-on-write where the filesystem supports it) and deploys mods there.
+
+[game]
+kind = "fallout4"
+# Your untouched Fallout 4 install (Steam library path).
+pristine = "/path/to/steamapps/common/Fallout 4"
+# Where the modded copy lives. Created by `realize`; safe to delete.
+instance = "/path/to/concierge/instances/fallout4-example"
+version = "1.11.221"
+
+[game.paths]
+# Fallout 4's load-order file and config directory.
+plugins_txt = "/path/to/AppData/Local/Fallout4/plugins.txt"
+my_games = "/path/to/Documents/My Games/Fallout4"
+
+[ini.Archive]
+bInvalidateOlderFiles = "1"
+sResourceDataDirsFinal = ""
+
+# ── Mods ──
+#
+# Each [[mod]] names a Nexus mod id and, once resolved, a file + md5 pin.
+# `concierge nexus resolve <mod_id>` picks the main file; `concierge fetch`
+# downloads it and prints the pin. `enabled = false` parks an entry: it is
+# kept, audited, and ignored by deploy until you enable it.
+
+[[mod]]
+name = "unofficial-fallout4-patch"
+version = "latest"
+enabled = false # resolve + pin, then enable
+nexus_mod_id = 4598
+  [mod.config]
+  provides = ["Unofficial Fallout 4 Patch.esp"]
+
+[[mod]]
+name = "full-dialogue-interface"
+version = "latest"
+enabled = false
+nexus_mod_id = 1235
+
+# A FOMOD-packaged mod: record the installer choices declaratively.
+# `concierge fomod <mod>` lists the available options once the archive is
+# fetched; an empty `select` takes the installer's defaults.
+[[mod]]
+name = "survival-options"
+version = "latest"
+enabled = false
+nexus_mod_id = 14650
+  [mod.fomod]
+  select = ["Everything"]

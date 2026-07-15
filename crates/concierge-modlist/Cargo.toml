@@ -1,0 +1,12 @@
+[package]
+name = "concierge-modlist"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge RimWorld family — folder mods under Mods/ activated by an ordered ModsConf.xml (package ids)."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[package]
+name = "concierge-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge desktop UI (prototype)"
+
+[dependencies]
+concierge-platform = { path = "../concierge-platform" }
+concierge-ui = { path = "../concierge-ui" }
+concierge-core = { path = "../concierge-core" }
+concierge-games = { path = "../concierge-games" }
+concierge-pluginorder = { path = "../concierge-pluginorder" }
+concierge-lint = { path = "../concierge-lint" }
+concierge-ai = { path = "../concierge-ai" }
+eframe = "0.31"
+portable-pty = "0.9"
+vt100 = "0.15"
+serde_json = "1.0.150"
+concierge-db = { version = "0.1.0", path = "../concierge-db" }
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "concierge-starfield"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge Starfield — a Bethesda-family leaf crate (data-only specialization of concierge-pluginorder)."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+concierge-pluginorder = { path = "../concierge-pluginorder" }
+
+[lints]
+workspace = true

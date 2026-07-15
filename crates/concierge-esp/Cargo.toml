@@ -1,0 +1,16 @@
+[package]
+name = "concierge-esp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Bethesda plugin (.esm/.esp/.esl) reader, conflict matrix, and resolver-plugin writer"
+
+[dependencies]
+flate2 = "1"
+thiserror = "1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = "1"

@@ -1,0 +1,330 @@
+# Intended game-set seed — the Nexus top games by mod count, each mapped to
+# its owning family/topology and a coverage status. Seeded from
+# v1/games.json; the gate test proves every 'covered' row resolves,
+# and docs/coverage.md is generated from this. status: covered | planned |
+# new-family | triage | skip.
+# Nexus catalog: 4895 games. This lists the top-40 by mod count plus the
+# games covered outside that slice (KOTOR2/RimWorld/Minecraft/Valheim/…).
+
+[[game]]
+domain = "skyrimspecialedition"
+name = "Skyrim Special Edition"
+nexus_mods = 134853
+family = "pluginorder"
+status = "covered"
+
+[[game]]
+domain = "fallout4"
+name = "Fallout 4"
+nexus_mods = 75033
+family = "pluginorder"
+status = "covered"
+
+[[game]]
+domain = "skyrim"
+name = "Skyrim"
+nexus_mods = 72999
+family = "pluginorder"
+status = "covered"
+
+[[game]]
+domain = "newvegas"
+name = "Fallout New Vegas"
+nexus_mods = 41274
+family = "pluginorder"
+status = "covered"
+
+[[game]]
+domain = "oblivion"
+name = "Oblivion"
+nexus_mods = 33320
+family = "pluginorder"
+status = "covered"
+
+[[game]]
+domain = "stardewvalley"
+name = "Stardew Valley"
+nexus_mods = 31984
+family = "modfolders"
+status = "covered"
+
+[[game]]
+domain = "cyberpunk2077"
+name = "Cyberpunk 2077"
+nexus_mods = 22413
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "baldursgate3"
+name = "Baldur's Gate 3"
+nexus_mods = 18493
+family = "pakregistry"
+status = "covered"
+
+[[game]]
+domain = "fallout3"
+name = "Fallout 3"
+nexus_mods = 17144
+family = "pluginorder"
+status = "covered"
+
+[[game]]
+domain = "morrowind"
+name = "Morrowind"
+nexus_mods = 15572
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "starfield"
+name = "Starfield"
+nexus_mods = 13344
+family = "pluginorder"
+status = "covered"
+
+[[game]]
+domain = "helldivers2"
+name = "Helldivers 2"
+nexus_mods = 10569
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "starwarsbattlefront22017"
+name = "Star Wars: Battlefront II (2017)"
+nexus_mods = 9654
+family = "toolmerge"
+status = "covered"  # stages into Frosty; tool merges (Vortex-style delegation)
+
+[[game]]
+domain = "witcher3"
+name = "The Witcher 3"
+nexus_mods = 8773
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "bladeandsorcery"
+name = "Blade & Sorcery"
+nexus_mods = 8762
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "mountandblade2bannerlord"
+name = "Mount & Blade II: Bannerlord"
+nexus_mods = 8126
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "7daystodie"
+name = "7 Days To Die"
+nexus_mods = 7964
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "marvelrivals"
+name = "Marvel Rivals"
+nexus_mods = 7531
+family = "filedrop"
+status = "covered"  # UE ~mods deploy is clean; anticheat = user's risk online
+
+[[game]]
+domain = "eldenring"
+name = "Elden Ring"
+nexus_mods = 7281
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "monsterhunterworld"
+name = "Monster Hunter: World"
+nexus_mods = 6456
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "reddeadredemption2"
+name = "Red Dead Redemption 2"
+nexus_mods = 5521
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "mysummercar"
+name = "My Summer Car"
+nexus_mods = 5121
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "residentevil42023"
+name = "Resident Evil 4 (2023)"
+nexus_mods = 5046
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "thesims4"
+name = "The Sims 4"
+nexus_mods = 4967
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "readyornot"
+name = "Ready or Not"
+nexus_mods = 4742
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "marvelsspidermanremastered"
+name = "Marvel's Spider-Man Remastered"
+nexus_mods = 4366
+family = "toolmerge"
+status = "covered"  # stages into SMPC tool; tool repacks asset_archive
+
+[[game]]
+domain = "oblivionremastered"
+name = "Oblivion Remastered"
+nexus_mods = 4205
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "dragonage"
+name = "Dragon Age: Origins"
+nexus_mods = 4013
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "devilmaycry5"
+name = "Devil May Cry 5"
+nexus_mods = 3623
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "monsterhunterwilds"
+name = "Monster Hunter Wilds"
+nexus_mods = 3565
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "dragonageinquisition"
+name = "Dragon Age: Inquisition"
+nexus_mods = 3292
+family = "toolmerge"
+status = "covered"  # stages into Frosty; tool merges
+
+[[game]]
+domain = "bladeandsorcerynomad"
+name = "Blade & Sorcery: Nomad"
+nexus_mods = 3261
+family = "filedrop"
+status = "covered"  # loose Mods into a manifest-declared Quest storage path
+
+[[game]]
+domain = "monsterhunterrise"
+name = "Monster Hunter Rise"
+nexus_mods = 3218
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "acecombat7skiesunknown"
+name = "Ace Combat 7: Skies Unknown"
+nexus_mods = 3183
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "fallout76"
+name = "Fallout 76"
+nexus_mods = 3116
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "streetfighter6"
+name = "Street Fighter 6"
+nexus_mods = 2813
+family = "filedrop"
+status = "covered"  # REFramework deploy is clean; anticheat = user's risk online
+
+[[game]]
+domain = "nomanssky"
+name = "No Man's Sky"
+nexus_mods = 2812
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "stellarblade"
+name = "Stellar Blade"
+nexus_mods = 2775
+family = "filedrop"
+status = "covered"  # UE ~mods (SB/Content/Paks/~mods, verified)
+
+[[game]]
+domain = "kingdomcomedeliverance2"
+name = "Kingdom Come: Deliverance II"
+nexus_mods = 2564
+family = "filedrop"
+status = "covered"
+
+[[game]]
+domain = "masseffectlegendaryedition"
+name = "Mass Effect Legendary Edition"
+nexus_mods = 2539
+family = "toolmerge"
+status = "covered"  # stages into ME3Tweaks; tool merges
+
+[[game]]
+domain = "valheim"
+name = "Valheim"
+nexus_mods = 2459
+family = "runtimeinject"
+status = "covered"
+
+[[game]]
+domain = "kotor2"
+name = "Knights of the Old Republic II"
+nexus_mods = 410
+family = "override"
+status = "covered"
+
+[[game]]
+domain = "kotor"
+name = "Star Wars: Knights of the Old Republic"
+nexus_mods = 500
+family = "override"
+status = "covered"
+
+[[game]]
+domain = "rimworld"
+name = "Rimworld"
+nexus_mods = 561
+family = "modlist"
+status = "covered"
+
+[[game]]
+domain = "minecraft"
+name = "Minecraft"
+nexus_mods = 630
+family = "jarmods"
+status = "covered"
+
+[[game]]
+domain = "palworld"
+name = "Palworld"
+nexus_mods = 2213
+family = "filedrop"
+status = "covered"
+

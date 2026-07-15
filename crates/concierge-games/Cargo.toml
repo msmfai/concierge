@@ -1,0 +1,30 @@
+[package]
+name = "concierge-games"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge game-crate assembly: the workspace registry that wires every family/leaf adapter into core's resolver. Adding a game = a crate + a row here."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+concierge-skyrimse = { path = "../concierge-skyrimse" }
+concierge-fallout4 = { path = "../concierge-fallout4" }
+concierge-skyrim = { path = "../concierge-skyrim" }
+concierge-newvegas = { path = "../concierge-newvegas" }
+concierge-fallout3 = { path = "../concierge-fallout3" }
+concierge-oblivion = { path = "../concierge-oblivion" }
+concierge-starfield = { path = "../concierge-starfield" }
+concierge-override = { path = "../concierge-override" }
+concierge-modfolders = { path = "../concierge-modfolders" }
+concierge-modlist = { path = "../concierge-modlist" }
+concierge-jarmods = { path = "../concierge-jarmods" }
+concierge-runtimeinject = { path = "../concierge-runtimeinject" }
+concierge-pakregistry = { path = "../concierge-pakregistry" }
+concierge-filedrop = { path = "../concierge-filedrop" }
+concierge-toolmerge = { path = "../concierge-toolmerge" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+toml = "0.8"

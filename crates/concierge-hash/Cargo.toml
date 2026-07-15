@@ -1,0 +1,11 @@
+[package]
+name = "concierge-hash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge — native xxHash64, the content hash used for archive identity."
+
+[dependencies]
+
+[lints]
+workspace = true

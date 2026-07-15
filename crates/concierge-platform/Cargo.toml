@@ -1,0 +1,12 @@
+[package]
+name = "concierge-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Host/OS abstractions shared across crates: helper-binary discovery, per-OS dirs"
+
+[dependencies]
+thiserror = "1"
+
+[lints]
+workspace = true

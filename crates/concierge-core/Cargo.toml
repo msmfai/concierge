@@ -1,0 +1,41 @@
+[package]
+name = "concierge-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge core — game-agnostic eval/realize, runtimes, store, state. Knows no game."
+
+[lib]
+name = "concierge"
+
+[features]
+# Optional: a mod whose source is a Nix fixed-output derivation (nix = "...").
+# OFF by default so the default build never invokes the `nix` binary.
+nix-source = []
+
+[dependencies]
+concierge-platform = { path = "../concierge-platform" }
+concierge-hash = { path = "../concierge-hash" }
+concierge-patch = { path = "../concierge-patch" }
+concierge-fomod = { path = "../concierge-fomod" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+toml_edit = "0.22"
+thiserror = "1"
+md-5 = "0.10"
+sha2 = "0.10"
+hex = "0.4"
+walkdir = "2"
+ureq = { version = "2", features = ["json"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# Test-only cycle: the lib knows no game, but the integration tests exercise
+# eval against the real family/leaf adapters, which are wired in via the
+# assembly crate. Cargo permits a cycle through a dev-dependency edge.
+concierge-games = { path = "../concierge-games" }
+# to author BSDiff patches in the build integration test.
+concierge-patch = { path = "../concierge-patch" }
