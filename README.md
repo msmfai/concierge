@@ -49,6 +49,12 @@ Download a build from the
 archive contains both the `concierge` command-line tool and the `concierge-gui`
 app for your platform — or build from source with `cargo build --release`.
 
+**The app** sets itself up on first run: launch `concierge-gui`, use the
+**“+ add game”** menu to pick your game, then create a profile — no paths or
+config files to hand-edit to get started.
+
+**The command line** starts from an example profile:
+
 ```sh
 cp -r examples/fallout4-profile my-pack
 $EDITOR my-pack/manifest.toml        # set where your game lives

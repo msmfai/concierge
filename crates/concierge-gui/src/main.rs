@@ -949,6 +949,23 @@ impl App {
             "create_empty" => self.create_profile(false),
             "create_clone" => self.create_profile(true),
             "new_modpack_ai" => self.new_modpack_concierge(),
+            _ if id.starts_with("add_game:") => {
+                let kind = id.trim_start_matches("add_game:");
+                if let Some(ws) = &self.workspace {
+                    match profiles::create_game(ws, kind) {
+                        Ok(_) => {
+                            self.discover();
+                            // Focus the newly added game.
+                            if let Some(i) = self.games.iter().position(|g| g.game == kind) {
+                                self.game_idx = i;
+                                self.profile_idx = 0;
+                                self.reload_profiles();
+                            }
+                        }
+                        Err(e) => self.error = Some(e.to_string()),
+                    }
+                }
+            }
             _ if id.starts_with("select_game:") => {
                 if let Ok(i) = id.trim_start_matches("select_game:").parse::<usize>() {
                     if i != self.game_idx && i < self.games.len() {
@@ -1966,7 +1983,19 @@ impl eframe::App for App {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
             }
             let Some(plan) = plan else {
-                ui.label("select a game and profile");
+                if self.games.is_empty() {
+                    ui.heading("Welcome to Concierge");
+                    ui.label(
+                        "Add a game with the “+ add game” menu at the top, then create a \
+                         profile to start building a modpack.",
+                    );
+                    if let Some(ws) = &self.workspace {
+                        ui.add_space(4.0);
+                        ui.weak(format!("workspace: {}", ws.display()));
+                    }
+                } else {
+                    ui.label("Select a game and profile above, or create a new profile.");
+                }
                 return;
             };
             let bethesda = is_bethesda(&plan.game.kind);
@@ -2219,6 +2248,21 @@ impl App {
                     });
                 if gsel != game_idx {
                     self.dispatch_intent(&format!("select_game:{gsel}"));
+                }
+                // Add a game to the workspace: pick a supported kind that isn't
+                // present yet; creating it makes the new-profile flow available.
+                let mut to_add: Option<String> = None;
+                egui::ComboBox::from_id_salt("add_game")
+                    .selected_text("+ add game")
+                    .show_ui(ui, |ui| {
+                        for kind in concierge_games::kinds() {
+                            if games.iter().all(|g| g != kind) {
+                                ui.selectable_value(&mut to_add, Some(kind.to_owned()), kind);
+                            }
+                        }
+                    });
+                if let Some(kind) = to_add {
+                    self.dispatch_intent(&format!("add_game:{kind}"));
                 }
                 let mut psel = profile_idx;
                 egui::ComboBox::from_label("profile")

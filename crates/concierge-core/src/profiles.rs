@@ -45,10 +45,41 @@ pub fn workspace() -> Result<PathBuf> {
             return Ok(d.to_path_buf());
         }
         match d.parent() {
+            // No workspace on the path up from here (e.g. a downloaded release
+            // run from its extracted folder). Fall back to a per-user default
+            // workspace rather than dead-ending on `RepoNotFound`.
             Some(p) => d = p,
-            None => return Err(Error::RepoNotFound(start)),
+            None => return default_workspace(),
         }
     }
+}
+
+/// The per-user default workspace, `<data_dir>/concierge`, created (with a
+/// `.concierge-workspace` marker and an empty `games/`) if absent. This gives a
+/// downloaded release a real, writable place to work without the user setting
+/// `CONCIERGE_REPO` or hand-writing a `manifest.toml`.
+pub fn default_workspace() -> Result<PathBuf> {
+    let base = concierge_platform::data_dir()
+        .ok_or_else(|| Error::Other("cannot locate a user data directory".to_owned()))?;
+    let ws = base.join("concierge");
+    std::fs::create_dir_all(ws.join("games")).ctx(&ws)?;
+    let marker = ws.join(".concierge-workspace");
+    if !marker.exists() {
+        std::fs::write(&marker, "").ctx(&marker)?;
+    }
+    Ok(ws)
+}
+
+/// Create the game directory `games/<kind>/` under a workspace so profiles can
+/// be added for it. `kind` must be a plain directory name (it becomes the
+/// game's `kind`). Returns the game dir; succeeds quietly if it already exists.
+pub fn create_game(workspace: &Path, kind: &str) -> Result<PathBuf> {
+    if kind.is_empty() || kind.contains(['/', '\\', ':', '.']) {
+        return Err(Error::Other(format!("invalid game kind '{kind}'")));
+    }
+    let dir = workspace.join("games").join(kind);
+    std::fs::create_dir_all(dir.join("profiles")).ctx(&dir)?;
+    Ok(dir)
 }
 
 /// A directory is a workspace if it has a dev marker
@@ -448,5 +479,28 @@ mod tests {
         std::fs::create_dir_all(base.join("notaprofile")).unwrap();
         assert!(delete_profile(&base.join("notaprofile")).is_err());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn create_game_makes_an_addable_game_dir() {
+        let ws = std::env::temp_dir().join(format!("cg-newgame-{}", std::process::id()));
+        std::fs::create_dir_all(&ws).unwrap();
+        let dir = create_game(&ws, "skyrimse").unwrap();
+        assert!(
+            dir.join("profiles").is_dir(),
+            "games/<kind>/profiles/ exists"
+        );
+        assert_eq!(dir, ws.join("games").join("skyrimse"));
+        // idempotent
+        assert!(create_game(&ws, "skyrimse").is_ok());
+        // a profile created here derives kind from the dir name
+        let prof = create_profile(&dir, "run1", None).unwrap();
+        assert!(prof.join("manifest.toml").exists());
+        // now the workspace lists it
+        assert!(is_workspace(&ws), "a workspace with a real games/ tree");
+        // bad kinds rejected
+        assert!(create_game(&ws, "a/b").is_err());
+        assert!(create_game(&ws, "").is_err());
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }
