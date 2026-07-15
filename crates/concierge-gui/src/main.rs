@@ -106,6 +106,22 @@ fn install_panic_hook() {
     }));
 }
 
+/// Choose which enumerated wgpu adapter to use, by backend preference:
+/// Vulkan, then Metal, then DX12, then GL, then whatever is first. Vulkan leads
+/// because it is the one backend that composites correctly through the Wine and
+/// Metal translation layers, and it is equally fine on native Windows and Linux;
+/// macOS exposes no Vulkan adapter, so it falls through to Metal. Returns the
+/// index into the `backends` slice, or `None` if it is empty.
+fn preferred_adapter(backends: &[eframe::wgpu::Backend]) -> Option<usize> {
+    use eframe::wgpu::Backend;
+    for want in [Backend::Vulkan, Backend::Metal, Backend::Dx12, Backend::Gl] {
+        if let Some(i) = backends.iter().position(|b| *b == want) {
+            return Some(i);
+        }
+    }
+    (!backends.is_empty()).then_some(0)
+}
+
 fn main() -> eframe::Result {
     // Surfaces wgpu/winit diagnostics when RUST_LOG is set (e.g.
     // RUST_LOG=wgpu_core=info,wgpu_hal=info); silent otherwise.
@@ -134,6 +150,20 @@ fn main() -> eframe::Result {
     // uses DX12 natively and falls back to Vulkan where DX12 has no surface.
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut wgpu_options.wgpu_setup {
         setup.instance_descriptor.backends = eframe::wgpu::Backends::PRIMARY;
+        // Prefer the Vulkan adapter. Under CrossOver/Wine the DX12 (D3DMetal)
+        // path composites a blank window for this app while Vulkan (via
+        // MoltenVK) renders correctly; Vulkan is also fine on native Windows and
+        // Linux, and macOS has no Vulkan adapter so it falls through to Metal.
+        setup.native_adapter_selector = Some(std::sync::Arc::new(|adapters, _surface| {
+            let order: Vec<eframe::wgpu::Backend> =
+                adapters.iter().map(|a| a.get_info().backend).collect();
+            let idx =
+                preferred_adapter(&order).ok_or_else(|| "no compatible wgpu adapter".to_owned())?;
+            adapters
+                .get(idx)
+                .cloned()
+                .ok_or_else(|| "adapter index out of range".to_owned())
+        }));
     }
     // Fifo (plain vsync) is the most broadly supported present mode; the default
     // AutoVsync can negotiate a swapchain that reports perpetually "suboptimal"
@@ -3531,5 +3561,49 @@ impl App {
                 ui.label("sha512: pinned");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preferred_adapter;
+    use eframe::wgpu::Backend;
+
+    #[test]
+    fn prefers_vulkan_over_dx12() {
+        // The CrossOver/Wine case: both DX12 and Vulkan enumerate; DX12
+        // composites blank, Vulkan renders — pick Vulkan.
+        assert_eq!(
+            preferred_adapter(&[Backend::Dx12, Backend::Vulkan]),
+            Some(1)
+        );
+        assert_eq!(
+            preferred_adapter(&[Backend::Vulkan, Backend::Dx12]),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn falls_through_to_metal_then_dx12() {
+        // macOS: no Vulkan adapter, Metal is chosen.
+        assert_eq!(preferred_adapter(&[Backend::Metal]), Some(0));
+        // Native Windows with no Vulkan driver: DX12 is the fallback.
+        assert_eq!(preferred_adapter(&[Backend::Dx12, Backend::Gl]), Some(0));
+        assert_eq!(preferred_adapter(&[Backend::Gl]), Some(0));
+    }
+
+    #[test]
+    fn empty_yields_none() {
+        assert_eq!(preferred_adapter(&[]), None);
+    }
+
+    #[test]
+    fn full_preference_order() {
+        let all = [Backend::Gl, Backend::Dx12, Backend::Metal, Backend::Vulkan];
+        assert_eq!(preferred_adapter(&all), Some(3)); // Vulkan wins
+        let no_vk = [Backend::Gl, Backend::Dx12, Backend::Metal];
+        assert_eq!(preferred_adapter(&no_vk), Some(2)); // Metal next
+        let no_vk_metal = [Backend::Gl, Backend::Dx12];
+        assert_eq!(preferred_adapter(&no_vk_metal), Some(1)); // Dx12 next
     }
 }
