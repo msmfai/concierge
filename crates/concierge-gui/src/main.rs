@@ -1821,11 +1821,9 @@ fn keystrokes_to_bytes(ui: &eframe::egui::Ui, _ctx: &eframe::egui::Context) -> V
     out
 }
 
-/// `~/.config/fo4nix` — where the CLI keeps API keys.
+/// `~/.config/concierge` — where the CLI keeps API keys.
 fn config_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".config")
-        .join("fo4nix")
+    concierge_platform::config_dir()
 }
 
 /// Compact count for card stats: `9_000_000` becomes "9.0M", `12_000` "12.0k".

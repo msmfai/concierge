@@ -1664,7 +1664,7 @@ fn run() -> Result<()> {
                     Ok(r) => println!("  agent done: {r:?}"),
                     Err(concierge_ai::Error::NoKey) => {
                         println!(
-                            "  autonomous loop needs a key at ~/.config/fo4nix/anthropic-api-key"
+                            "  autonomous loop needs a key at ~/.config/concierge/anthropic-api-key"
                         );
                         println!(
                             "  (tools + verification run without it; use --catalog / --resolve)"

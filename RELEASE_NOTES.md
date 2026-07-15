@@ -1,48 +1,43 @@
 # Concierge v0.1.0
 
 > [!WARNING]
-> **Alpha release.** This is a tool I made for myself I thought others may
-> benefit from. Please note docs are AI generated for now.
+> **Alpha release.** Features and game compatibility are still evolving.
 
-Concierge is a mod manager. Your mod list lives in a text file; Concierge
-downloads the mods, verifies them, installs them into a separate copy of the
-game, sorts the load order, and launches. The original game install is never
-modified. It can be driven by hand or by an AI assistant running in a sandbox
-that can only write where the pack allows.
+Concierge creates reproducible modded game installations from simple text
+pack definitions. It prepares each pack in a separate copy of the game, so the
+original installation remains untouched, and provides the complete workflow
+for finding files, reviewing changes, installing, validating, launching, and
+rolling back a pack.
 
-## In this release
+## What Concierge does
 
-- About 45 supported games; Fallout 4 is the most tested (including on macOS
-  via CrossOver), the rest have seen less use.
-- Nexus Mods downloads (automatic with a Premium key, guided without),
-  checksum verification, and a searchable local mod catalog.
-- FOMOD installer choices stored in the pack file and replayed on install.
-- LOOT-based load-order sorting; health checks for missing dependencies,
-  plugin limits, on-disk drift, and pristine-install verification; `preview`
-  before any install.
-- Multiple packs per game with shared downloads; rollback to earlier states;
-  `undeploy` removes everything.
-- Agent operation: per-pack assistant instructions and a sandboxed
-  `concierge shell`.
-- CLI plus an egui GUI (mod browser, preview/apply, rollback). Both the
-  `concierge` CLI and the `concierge-gui` app are in every download.
+- Keeps a mod pack reproducible and reviewable as a text file.
+- Downloads requested files, verifies their integrity, and reuses cached
+  downloads across packs.
+- Previews planned changes before modifying a deployment.
+- Builds isolated game installations without changing the original game.
+- Resolves installation and load order, then checks the result for missing
+  requirements, conflicts, unexpected disk changes, and game limits.
+- Supports multiple packs per game, rollback to earlier states, and complete
+  removal of a deployment.
+- Provides both a desktop app and command-line interface in every release
+  archive.
+- Allows an assistant to manage a pack through a restricted workspace that
+  cannot write outside the pack's permitted locations.
+
+Concierge supports dozens of games, although the depth of validation and
+automation varies by game while the project is in alpha.
 
 ## Downloads
 
-| platform | file |
-|---|---|
-| Linux x86_64 | `concierge-v0.1.0-x86_64-linux.tar.gz` |
-| Windows x86_64 | `concierge-v0.1.0-x86_64-windows.zip` |
-| macOS Apple Silicon | `concierge-v0.1.0-aarch64-macos.tar.gz` |
-| macOS Intel | `concierge-v0.1.0-x86_64-macos.tar.gz` |
-
-Runtime dependency: `bsdtar` (preinstalled on macOS and Windows 10+;
-`libarchive-tools` on Linux).
+Choose the archive attached to this release for your operating system. Each
+archive includes both the desktop app and command-line interface.
 
 ## Known limitations
 
-- Windows and Linux launch flows are less developed than macOS.
-- Some GUI views (sorting, conflicts, load order) only appear for Bethesda
-  games.
-- Unusual FOMOD installers may need choices written into the pack file by
-  hand.
+- Some game workflows have received substantially more real-world testing
+  than others.
+- Advanced validation and conflict views depend on the information available
+  for each game.
+- Installers that require unusual interactive choices may need additional pack
+  configuration.

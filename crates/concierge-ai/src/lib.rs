@@ -20,7 +20,7 @@ use concierge::repo::Repo;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no Anthropic API key (put one in ~/.config/fo4nix/anthropic-api-key to run the autonomous loop)")]
+    #[error("no Anthropic API key (put one in ~/.config/concierge/anthropic-api-key to run the autonomous loop)")]
     NoKey,
     #[error("api: {0}")]
     Api(String),

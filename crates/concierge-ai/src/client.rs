@@ -1,5 +1,5 @@
 //! Thin Anthropic Messages API client for the agent loop. Key is client-side
-//! (`~/.config/fo4nix/anthropic-api-key` or `ANTHROPIC_API_KEY`), mirroring the
+//! (`~/.config/concierge/anthropic-api-key` or `ANTHROPIC_API_KEY`), mirroring the
 //! Nexus key — never embedded, never mirrored. Swappable: the loop calls
 //! `send`, so a different backend is a drop-in.
 
@@ -12,10 +12,7 @@ const VERSION: &str = "2023-06-01";
 /// autonomous loop is gated on the user supplying one; everything else runs
 /// without it.
 pub fn api_key() -> Result<String, Error> {
-    let path = concierge::repo::home()
-        .join(".config")
-        .join("fo4nix")
-        .join("anthropic-api-key");
+    let path = concierge_platform::config_file("anthropic-api-key");
     if let Ok(k) = std::fs::read_to_string(&path) {
         let k = k.trim().to_owned();
         if !k.is_empty() {
