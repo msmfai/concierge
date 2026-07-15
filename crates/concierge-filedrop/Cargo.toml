@@ -1,0 +1,12 @@
+[package]
+name = "concierge-filedrop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge loose-drop family — games modded by copying files into a fixed mod folder with no load-order file (Cyberpunk, Witcher 3, Monster Hunter, Elden Ring, RDR2, Palworld, No Man's Sky, …). Each game is a data entry."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+
+[lints]
+workspace = true

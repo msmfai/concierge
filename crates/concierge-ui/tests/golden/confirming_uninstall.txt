@@ -1,0 +1,21 @@
++----------------------------------------------------------------+
+| Concierge                                                      |
++----------------------------------------------------------------+
+| workspace: /ws (2 games)                                       |
+| game: skyrimse · profile: modpack                              |
+| mode: Edit · tab: Setup                                        |
++----------------------------------------------------------------+
+| ! Uninstall — remove the installed mods from the game?         |
++----------------------------------------------------------------+
+MODS:
+   1. [x] skse64
+   2. [x] SkyUI
+FIELDS:
+  search = ""  (filter mods)
+  ai_input = ""  (ask the assistant)
+  new_profile = ""  (new profile)
+====
+STATE: ConfirmingUninstall
+TRANSITIONS:
+  confirm_yes      Confirm                  [enabled]  -> Editing
+  confirm_no       Cancel                   [enabled]  -> Editing

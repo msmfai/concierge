@@ -1,0 +1,18 @@
++----------------------------------------------------------------+
+| Concierge                                                      |
++----------------------------------------------------------------+
+| workspace: /ws (2 games)                                       |
+| game: skyrimse · profile: modpack                              |
+| mode: Edit · tab: Setup                                        |
++----------------------------------------------------------------+
+MODS:
+   1. [x] skse64
+   2. [x] SkyUI
+FIELDS:
+  search = ""  (filter mods)
+  ai_input = ""  (ask the assistant)
+  new_profile = ""  (new profile)
+====
+STATE: PreviewChanges
+TRANSITIONS:
+  close_preview    Close preview            [enabled]  -> Editing

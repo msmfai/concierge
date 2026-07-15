@@ -1,0 +1,12 @@
+[package]
+name = "concierge-patch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge binary-patch primitive (BSDiff): derive a target file from a source the user owns, so a modpack ships a patch instead of redistributing content."
+
+[dependencies]
+qbsdiff = "1"
+
+[lints]
+workspace = true

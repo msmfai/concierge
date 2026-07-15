@@ -1,0 +1,33 @@
+[package]
+name = "concierge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge CLI — the binary wiring core + per-game accelerator crates + the metadata store."
+
+[[bin]]
+name = "concierge"
+path = "src/main.rs"
+
+[features]
+# Enable the legacy ClickHouse migrate/query/record commands.
+clickhouse-migrate = ["concierge-db/clickhouse"]
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+concierge-fomod = { path = "../concierge-fomod" }
+concierge-pluginorder = { path = "../concierge-pluginorder" }
+concierge-games = { path = "../concierge-games" }
+concierge-override = { path = "../concierge-override" }
+concierge-ba2 = { path = "../concierge-ba2" }
+concierge-wabbajack = { path = "../concierge-wabbajack" }
+concierge-ai = { path = "../concierge-ai" }
+concierge-db = { path = "../concierge-db" }
+concierge-ui = { path = "../concierge-ui" }
+concierge-esp = { path = "../concierge-esp" }
+concierge-lint = { path = "../concierge-lint" }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

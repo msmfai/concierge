@@ -1,0 +1,7 @@
+# A nix GNU toolchain shadows `cc` on this machine; link with Apple clang so
+# macOS system libraries (iconv, Security.framework via rustls) resolve.
+[target.aarch64-apple-darwin]
+linker = "/usr/bin/clang"
+
+[target.x86_64-apple-darwin]
+linker = "/usr/bin/clang"

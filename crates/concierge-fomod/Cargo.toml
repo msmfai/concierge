@@ -1,0 +1,12 @@
+[package]
+name = "concierge-fomod"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "FOMOD ModuleConfig.xml installer: parse the installer spec and apply recorded option selections to yield exact source->destination file installs — the model Vortex/MO2 use, no bulk-deploy."
+
+[dependencies]
+roxmltree = "0.20"
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "concierge-pluginorder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge Bethesda accelerator — LOOT sorting + esp-driven conflict/clean/resolver ops. A per-game crate: codified logic core doesn't need."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+concierge-esp = { path = "../concierge-esp" }
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+crc32fast = "1"
+regex = "1"
+serde_json = "1"
+concierge-ba2 = { path = "../concierge-ba2" }
+concierge-hash = { path = "../concierge-hash" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = "1"

@@ -1,0 +1,16 @@
+[package]
+name = "concierge-ba2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge — native Bethesda Archive (BA2, BTDX v1 GNRL + DX10) reader."
+
+[dependencies]
+flate2 = "1"
+thiserror = "1"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,43 @@
++----------------------------------------------------------------+
+| Concierge                                                      |
++----------------------------------------------------------------+
+| workspace: /ws (2 games)                                       |
+| game: skyrimse · profile: modpack                              |
+| mode: Edit · tab: Setup                                        |
++----------------------------------------------------------------+
+MODS:
+   1. [x] skse64
+   2. [x] SkyUI
+FIELDS:
+  search = ""  (filter mods)
+  new_profile = ""  (new profile)
+====
+STATE: AiRunning
+TRANSITIONS:
+  download         ⬇ Download               [enabled]
+  apply            ⟳ Apply                  [enabled]
+  verify           Verify                   [enabled]
+  sort_load        ⇅ Sort load order        [enabled]
+  requirements     🔗 Requirements           [enabled]
+  find_patches     🩹 Find patches           [enabled]
+  merge_conflicts  Merge conflicts          [enabled]
+  conflicts        Conflicts                [enabled]
+  play             ▶ Play                   [enabled]
+  uninstall        Uninstall                [enabled]  -> ConfirmingUninstall
+  toggle_lock      🔓 Edit                   [enabled]
+  undo             ↶ undo                   [guarded: nothing to undo]
+  add_open         + add mod                [enabled]
+  ai_interrupt     stop                     [enabled]
+  rescan           rescan                   [enabled]
+  delete_profile   🗑 delete profile         [enabled]
+  create_empty     empty                    [guarded: name the profile first]
+  create_clone     clone active             [guarded: name the profile first]
+  new_modpack_ai   🪄 new modpack (AI)       [guarded: an action is running]
+ *select_game:0    skyrimse                 [enabled]
+  select_game:1    fallout4                 [enabled]
+ *select_profile:0 modpack                  [enabled]
+  open_settings    ⚙ Settings               [enabled]  -> Settings
+  open_preview     👁 Preview                [enabled]  -> PreviewChanges
+  open_browse      🔎 browse                 [enabled]  -> Browse
+ *tab_setup        📝 Setup                  [enabled]
+  tab_installed    📦 Installed              [enabled]

@@ -1,0 +1,148 @@
+{
+ "$type": "ModList, Wabbajack.Lib",
+ "Name": "Devil's Food Cake",
+ "Author": "LaughingHyena (maintained by cacophony)",
+ "Description": "A Fallout 4 NSFW mod list with all the goodies!",
+ "GameType": "Fallout4",
+ "Version": "0.1.0.1",
+ "IsNSFW": true,
+ "WabbajackVersion": "2.5.1.0",
+ "Website": "http://www.wabbajack.org/#/modlists/info?machineURL=dfc",
+ "Archives": [
+  {
+   "$type": "Archive, Wabbajack.Lib",
+   "Hash": "0AiA5TRelPg=",
+   "Meta": "[General]\ngameName=fallout4\nmodID=33946\nfileID=195989",
+   "Name": "xSE PluginPreloader F4 0.2.4-33946-0-2-4-1606749072.zip",
+   "Size": 2690368,
+   "State": {
+    "$type": "NexusDownloader, Wabbajack.Lib",
+    "Name": "xSE PluginPreloader F4",
+    "Author": "Kerber",
+    "Version": "0.2.4.0",
+    "ImageURL": "https://staticdelivery.nexusmods.com/mods/1151/images/33946/33946-1538438829-1641188428.png",
+    "IsNSFW": false,
+    "Description": "This mod allows preload F4SE plugins before the game initializes.",
+    "GameName": "Fallout4",
+    "ModID": 33946,
+    "FileID": 195989,
+    "PrimaryKeyString": "NexusDownloader+State|Fallout4|33946|195989"
+   }
+  },
+  {
+   "$type": "Archive, Wabbajack.Lib",
+   "Hash": "BWAjAxFMX7s=",
+   "Meta": "[General]\ngameName=fallout4\nmodID=47359\nfileID=192106",
+   "Name": "TBB Redistributables-47359-2020-3-1601257681.zip",
+   "Size": 94461,
+   "State": {
+    "$type": "NexusDownloader, Wabbajack.Lib",
+    "Name": "Buffout 4",
+    "Author": "Ryan",
+    "Version": "2020.3.0.0",
+    "ImageURL": "https://staticdelivery.nexusmods.com/mods/1151/images/47359/47359-1599900935-173191707.png",
+    "IsNSFW": false,
+    "Description": "It's like buffout but for the engine",
+    "GameName": "Fallout4",
+    "ModID": 47359,
+    "FileID": 192106,
+    "PrimaryKeyString": "NexusDownloader+State|Fallout4|47359|192106"
+   }
+  },
+  {
+   "$type": "Archive, Wabbajack.Lib",
+   "Hash": "3louLayB3HM=",
+   "Meta": "[General]\ngameName=fallout4\nmodID=21103\nfileID=110292",
+   "Name": "9x39 Project - v2.0-21103-2-0.rar",
+   "Size": 276142910,
+   "State": {
+    "$type": "NexusDownloader, Wabbajack.Lib",
+    "Name": "9x39 Project",
+    "Author": "FX0x01 - Ha_ru - Navaro and friends",
+    "Version": "0.0.0.0",
+    "ImageURL": "https://staticdelivery.nexusmods.com/mods/1151/images/21103/21103-1562019619-142594688.png",
+    "IsNSFW": false,
+    "Description": "The mod adds VSS and AS VAL, with a flexible modification system that allows for hand grips and other tactical attachments.",
+    "GameName": "Fallout4",
+    "ModID": 21103,
+    "FileID": 110292,
+    "PrimaryKeyString": "NexusDownloader+State|Fallout4|21103|110292"
+   }
+  },
+  {
+   "$type": "Archive, Wabbajack.Lib",
+   "Hash": "3X92A7YmeI0=",
+   "Meta": "[General]\ngameName=fallout4\nmodID=46839\nfileID=188921",
+   "Name": "9x39 Project Addon - SR3M-46839-1-1-1597172309.7z",
+   "Size": 16767258,
+   "State": {
+    "$type": "NexusDownloader, Wabbajack.Lib",
+    "Name": "9x39 Project Addon - SR3M",
+    "Author": "Zavod team",
+    "Version": "0.0.0.0",
+    "ImageURL": "https://staticdelivery.nexusmods.com/mods/1151/images/46839/46839-1597262761-1110201670.png",
+    "IsNSFW": false,
+    "Description": "9x39 Project Addon - SR3M",
+    "GameName": "Fallout4",
+    "ModID": 46839,
+    "FileID": 188921,
+    "PrimaryKeyString": "NexusDownloader+State|Fallout4|46839|188921"
+   }
+  },
+  {
+   "$type": "Archive, Wabbajack.Lib",
+   "Hash": "8c+dxnxiqyM=",
+   "Meta": "[General]\ndirectURL=https://github.com/ModOrganizer2/modorganizer/releases/download/v2.4.1/Mod.Organizer-2.4.1.7z",
+   "Name": "Mod.Organizer-2.4.1.7z",
+   "Size": 89658061,
+   "State": {
+    "$type": "HttpDownloader, Wabbajack.Lib",
+    "Url": "https://github.com/ModOrganizer2/modorganizer/releases/download/v2.4.1/Mod.Organizer-2.4.1.7z",
+    "Headers": [],
+    "PrimaryKeyString": "HTTPDownloader+State|https://github.com/ModOrganizer2/modorganizer/releases/download/v2.4.1/Mod.Organizer-2.4.1.7z"
+   }
+  },
+  {
+   "$type": "Archive, Wabbajack.Lib",
+   "Hash": "qRBWBZdt0bo=",
+   "Meta": "[General]\ndirectURL=https://mega.nz/file/fd9iXSAK#f3CyZyf-ngT5IZ6zunm2rzOyFLaLeZELi49Q4GGlBj0",
+   "Name": "A Forest 0.7.rar",
+   "Size": 1830479012,
+   "State": {
+    "$type": "MegaDownloader, Wabbajack.Lib",
+    "Url": "https://mega.nz/file/fd9iXSAK#f3CyZyf-ngT5IZ6zunm2rzOyFLaLeZELi49Q4GGlBj0",
+    "Headers": [],
+    "PrimaryKeyString": "MegaDownloader+State|https://mega.nz/file/fd9iXSAK#f3CyZyf-ngT5IZ6zunm2rzOyFLaLeZELi49Q4GGlBj0"
+   }
+  }
+ ],
+ "Directives": [
+  {
+   "$type": "FromArchive, Wabbajack.Lib",
+   "ArchiveHashPath": [
+    "8c+dxnxiqyM=",
+    "boost_python38-vc142-mt-x64-1_75.dll"
+   ],
+   "Hash": "IfmLVDqJxVk=",
+   "Size": 191488,
+   "To": "boost_python38-vc142-mt-x64-1_75.dll"
+  },
+  {
+   "$type": "InlineFile, Wabbajack.Lib",
+   "SourceDataID": "fa02b4cd-79e0-49a1-ba39-26d588f8ea2c",
+   "Hash": "hGwfMvkWrkI=",
+   "Size": 49,
+   "To": "dump_running_process.bat"
+  },
+  {
+   "$type": "FromArchive, Wabbajack.Lib",
+   "ArchiveHashPath": [
+    "PfX6zen7m2M=",
+    "helper.exe"
+   ],
+   "Hash": "lp4qo5+1Dy4=",
+   "Size": 27136,
+   "To": "helper.exe"
+  }
+ ]
+}

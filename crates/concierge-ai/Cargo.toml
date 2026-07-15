@@ -1,0 +1,20 @@
+[package]
+name = "concierge-ai"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge — the Synthesize rung (Rung 3). AI orchestrator that calls the deterministic core as tools and is verified by it; the core is the oracle/guardrail."
+
+[dependencies]
+concierge-platform = { path = "../concierge-platform" }
+concierge-core = { path = "../concierge-core" }
+concierge-pluginorder = { path = "../concierge-pluginorder" }
+concierge-db = { path = "../concierge-db" }
+concierge-hash = { path = "../concierge-hash" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+thiserror = "1"
+
+[lints]
+workspace = true

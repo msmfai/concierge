@@ -1,0 +1,24 @@
++----------------------------------------------------------------+
+| Concierge                                                      |
++----------------------------------------------------------------+
+| workspace: /ws (2 games)                                       |
+| game: skyrimse · profile: modpack                              |
+| mode: Edit · tab: Setup                                        |
++----------------------------------------------------------------+
+MODS:
+   1. [x] skse64
+   2. [x] SkyUI
+FIELDS:
+  search = ""  (filter mods)
+  browse_query = ""  (catalog search)
+  nxm_input = ""  (nxm:// link)
+  ai_input = ""  (ask the assistant)
+  new_profile = ""  (new profile)
+====
+STATE: Browse
+TRANSITIONS:
+  browse_search    search                   [enabled]
+  nxm_add          add nxm                  [guarded: paste an nxm:// link]
+  add_hit:12604    ✓ added: SkyUI by SkyUI Team [guarded: already in the manifest]
+  add_hit:3863     + add SkySight Skins by fadingsignal (▲12000, Models and Textures) [enabled]
+  close_browse     Close browse             [enabled]  -> Editing

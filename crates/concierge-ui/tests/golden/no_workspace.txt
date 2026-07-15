@@ -1,0 +1,12 @@
++----------------------------------------------------------------+
+| Concierge                                                      |
++----------------------------------------------------------------+
+| mode: Locked · tab: Setup                                      |
++----------------------------------------------------------------+
+FIELDS:
+  search = ""  (filter mods)
+  ai_input = ""  (ask the assistant)
+  new_profile = ""  (new profile)
+====
+STATE: NoWorkspace
+TRANSITIONS:

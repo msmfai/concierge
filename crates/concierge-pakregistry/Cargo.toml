@@ -1,0 +1,12 @@
+[package]
+name = "concierge-pakregistry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge Larian family — Baldur's Gate 3 (.pak mods + modsettings.lsx load-order registry). Room for other Larian titles as leaves."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+
+[lints]
+workspace = true

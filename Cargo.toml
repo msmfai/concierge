@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/concierge",
+    "crates/concierge-ai",
+    "crates/concierge-core",
+    "crates/concierge-platform",
+    "crates/concierge-ba2",
+    "crates/concierge-hash",
+    "crates/concierge-patch",
+    "crates/concierge-pluginorder",
+    "crates/concierge-skyrimse",
+    "crates/concierge-fallout4",
+    "crates/concierge-skyrim",
+    "crates/concierge-newvegas",
+    "crates/concierge-fallout3",
+    "crates/concierge-oblivion",
+    "crates/concierge-starfield",
+    "crates/concierge-games",
+    "crates/concierge-modfolders",
+    "crates/concierge-modlist",
+    "crates/concierge-jarmods",
+    "crates/concierge-runtimeinject",
+    "crates/concierge-pakregistry",
+    "crates/concierge-filedrop",
+    "crates/concierge-toolmerge",
+    "crates/concierge-wabbajack",
+    "crates/concierge-db",
+    "crates/concierge-esp",
+    "crates/concierge-fomod",
+    "crates/concierge-lint",
+    "crates/concierge-override",
+    "crates/concierge-gui",
+    "crates/concierge-ui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/msmfai/concierge"
+homepage = "https://github.com/msmfai/concierge"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+as_conversions = "deny"
+# pedantic noise we accept deliberately
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+# nursery lints that are noisy / false-positive-prone (documented exceptions)
+option_if_let_else = "allow"
+or_fun_call = "allow"
+cognitive_complexity = "allow"
+too_long_first_doc_paragraph = "allow"

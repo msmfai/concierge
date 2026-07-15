@@ -1,0 +1,16 @@
+[package]
+name = "concierge-override"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge KOTOR accelerator — native 2DA format + TSLPatcher changes.ini engine (subsumes HoloPatcher for the common install case)."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+thiserror = "1"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+proptest = "1"

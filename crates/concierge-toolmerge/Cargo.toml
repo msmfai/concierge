@@ -1,0 +1,12 @@
+[package]
+name = "concierge-toolmerge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge merge-tool family — games whose mods are staged into an external merge/repack tool's input folder (Frosty, ME3Tweaks, SMPC). Concierge stages + undeploys the mods; the tool performs the archive merge, exactly as Vortex delegates."
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+
+[lints]
+workspace = true
