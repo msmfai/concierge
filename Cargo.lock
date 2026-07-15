@@ -1452,6 +1452,7 @@ dependencies = [
  "ahash",
  "bytemuck",
  "egui",
+ "egui-winit",
  "glow",
  "log",
  "memoffset",
@@ -1840,6 +1841,20 @@ dependencies = [
  "slotmap",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "glow-probe"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui-winit",
+ "egui_glow",
+ "glow",
+ "glutin",
+ "glutin-winit",
+ "raw-window-handle",
+ "winit",
 ]
 
 [[package]]
