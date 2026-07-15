@@ -2922,7 +2922,12 @@ impl App {
                 ui.separator();
                 ui.strong("Nexus Mods");
                 ui.label(
-                    "To download Nexus mods automatically, paste your personal API key —                      it's free: make a nexusmods.com account, then Account Settings → API                      Keys → Personal key. No key? You can still download a mod's file                      yourself and drop it in your Downloads folder, then Apply.",
+                    "Automatic in-app downloads from Nexus need Nexus Premium (paid). A \
+                     personal API key — free to create at nexusmods.com \u{2192} Account \
+                     Settings \u{2192} API Keys — lets Concierge identify you and look mods \
+                     up; paste it here. Without Premium you can still mod: on a mod's Nexus \
+                     page use \"Mod Manager Download\" (or download the file), drop it in \
+                     your Downloads folder, then Apply \u{2014} no key or Premium needed.",
                 );
                 ui.horizontal(|ui| {
                     ui.add(
@@ -2937,7 +2942,10 @@ impl App {
                             let _ = std::fs::create_dir_all(&dir);
                             match std::fs::write(dir.join("nexus-api-key"), &k) {
                                 Ok(()) => {
-                                    self.notice = Some("Nexus API key saved — you can download mods now.".to_owned());
+                                    self.notice = Some(
+                                        "Nexus API key saved — you can download mods now."
+                                            .to_owned(),
+                                    );
                                     self.nexus_key_input.clear();
                                 }
                                 Err(e) => self.error = Some(format!("couldn't save key: {e}")),

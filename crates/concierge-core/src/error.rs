@@ -28,7 +28,7 @@ pub enum Error {
     StoreMiss { name: String, path: PathBuf },
     #[error("nexus api: {0}")]
     Nexus(String),
-    #[error("no Nexus API key. To download from Nexus automatically, put a (free) personal API key in ~/.config/concierge/nexus-api-key or the NEXUS_API_KEY env var. Or download the file yourself into ~/Downloads and re-run — no key needed.")]
+    #[error("no Nexus API key. Automatic downloads need Nexus Premium (paid); a personal key (free to make at nexusmods.com) goes in ~/.config/concierge/nexus-api-key or NEXUS_API_KEY. Without Premium: download the file from its Nexus page into ~/Downloads and re-run — no key needed.")]
     NoApiKey,
     #[error("http: {0}")]
     Http(Box<ureq::Error>),
