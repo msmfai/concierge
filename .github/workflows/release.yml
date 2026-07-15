@@ -1,0 +1,75 @@
+# Build the concierge CLI natively on each OS and attach the binaries to the
+# GitHub release for the given tag. Runs on tag push (v*) or manually via
+# workflow_dispatch with a tag input.
+name: Release binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach binaries to (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: x86_64-linux
+            archive: tar.gz
+          - os: windows-latest
+            label: x86_64-windows
+            archive: zip
+          - os: macos-latest
+            label: aarch64-macos
+            archive: tar.gz
+          - os: macos-13
+            label: x86_64-macos
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release -p concierge
+      - name: Resolve tag
+        id: tag
+        shell: bash
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          name="concierge-${{ steps.tag.outputs.tag }}-${{ matrix.label }}"
+          mkdir "$name"
+          cp target/release/concierge LICENSE README.md "$name"/
+          tar -czf "$name.tar.gz" "$name"
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $name = "concierge-${{ steps.tag.outputs.tag }}-${{ matrix.label }}"
+          New-Item -ItemType Directory -Path $name | Out-Null
+          Copy-Item target/release/concierge.exe, LICENSE, README.md $name/
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.tag.outputs.tag }}" \
+            concierge-${{ steps.tag.outputs.tag }}-${{ matrix.label }}.${{ matrix.archive }} \
+            --clobber --repo "${{ github.repository }}"
