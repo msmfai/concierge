@@ -139,9 +139,18 @@ fn main() -> eframe::Result {
     // AutoVsync can negotiate a swapchain that reports perpetually "suboptimal"
     // through Vulkan translation layers and never composites the rendered frame.
     wgpu_options.present_mode = eframe::wgpu::PresentMode::Fifo;
+    // Under CrossOver/Wine the compositor shows a windowed swapchain's clear
+    // color but not its drawn content; a borderless-fullscreen swapchain
+    // composites correctly. Opt in with CONCIERGE_FULLSCREEN=1 (native platforms
+    // keep a normal window).
+    let mut viewport = eframe::egui::ViewportBuilder::default();
+    if std::env::var_os("CONCIERGE_FULLSCREEN").is_some() {
+        viewport = viewport.with_fullscreen(true);
+    }
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         wgpu_options,
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
