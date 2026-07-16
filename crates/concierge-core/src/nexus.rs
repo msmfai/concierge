@@ -4,7 +4,6 @@
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::repo::home;
 
 const APP: &str = "concierge-prototype/0.1";
 
