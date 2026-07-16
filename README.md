@@ -44,6 +44,47 @@ The command line is the primary interface; there is also a GUI.
 - On macOS, launches Windows games through CrossOver, including
   script-extender setups.
 
+## A quick tour
+
+Building a pack, start to finish — by hand or with an assistant.
+
+**1 · Pick your game.** Around 45 are supported out of the box — Fallout 4,
+Skyrim, Starfield, Cyberpunk 2077, Baldur's Gate 3, RimWorld, and more — plus a
+generic mode for the rest.
+
+![The “+ add game” menu open, listing supported games: 7 Days to Die, Baldur's Gate 3, Blade & Sorcery, Cyberpunk 2077, Devil May Cry 5, Dragon Age, Elden Ring, and more.](docs/tour/1-pick-game.png)
+
+**2 · Browse the catalog.** Search your game's mods, ranked by endorsements with
+real download counts. One click adds a mod to your pack.
+
+![The Nexus catalog browser inside Concierge, showing Cyber Engine Tweaks, redscript, RED4ext and ArchiveXL with endorsement and download counts and an “Add to manifest” button on each.](docs/tour/2-browse.png)
+
+**3 · Your pack is a list you own.** Every mod is a row you can toggle, version,
+and inspect. Underneath it's a plain text file — no hidden state, nothing you
+can't read or edit.
+
+![The pack view: four mods as rows with on/off toggles, version and source columns, a details pane showing the selected mod, and Preview / Download / Apply / Play / Uninstall buttons.](docs/tour/3-pack.png)
+
+**4 · Preview before anything changes.** See exactly what an install will add or
+remove first. Concierge installs into a *separate copy* of the game, so your
+original stays pristine — and nothing happens until you click Apply.
+
+![A “Preview changes” dialog listing four mods to deploy and zero to remove, with the note “Nothing changes until you Apply.”](docs/tour/4-preview.png)
+
+**5 · Honest about what's left to do.** No fake “done”. When a step still needs a
+free key or a manual download, Concierge says so plainly instead of flashing
+success.
+
+![The pack view with an amber banner reading “4 still needed — click ‘Mod Manager Download’ on each (one click each, free), or save to ~/Downloads, then re-run.”](docs/tour/5-honest.png)
+
+**6 · Or let the AI concierge build it.** Open the agent panel and Claude Code
+runs inside the pack's sandbox — it can only write where the pack allows, never
+your real game. It reads the manifest, runs the checks, and recommends mods.
+Tell it the playthrough you want; everything it does lands in the same text file
+you can inspect.
+
+![The agent panel: Claude Code has run the pack's checks and explains that Cyberpunk isn't a LOOT/plugin game so load-order and conflict sorting don't apply, confirms the audit is green, and recommends adding TweakXL and Codeware with their endorsement counts — “catalog-verified, not invented.”](docs/tour/6-ai.png)
+
 ## Getting started
 
 Download a build from the
