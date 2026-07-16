@@ -286,7 +286,7 @@ impl Catalog {
         let query_sql = format!(
             "SELECT mod_id, name, endorsements, file_size/1024 AS kb, author, summary, \
              category, downloads, updated_at FROM mods \
-             WHERE game_domain=?1 AND lower(name) LIKE ?2 AND file_size>0{extra_where}{cat_clause} \
+             WHERE game_domain=?1 AND lower(name) LIKE ?2{extra_where}{cat_clause} \
              ORDER BY {} LIMIT ?3",
             sort.order_sql()
         );
@@ -325,7 +325,7 @@ impl Catalog {
     pub fn categories(&self, game_domain: &str) -> Result<Vec<(String, u64)>> {
         let mut stmt = self.conn.prepare(
             "SELECT category, count(*) AS n FROM mods \
-             WHERE game_domain=?1 AND category<>'' AND file_size>0 \
+             WHERE game_domain=?1 AND category<>'' \
              GROUP BY category ORDER BY n DESC",
         )?;
         let rows = stmt.query_map(rusqlite::params![game_domain], |r| {
