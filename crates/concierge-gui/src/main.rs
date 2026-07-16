@@ -269,6 +269,8 @@ enum Edit {
     Move(usize, usize),
     Remove(String),
     Add(NewMod),
+    /// Point the profile at the game's install folder (`[game].pristine`).
+    SetPristine(String),
 }
 
 /// A destructive action awaiting confirmation (Nielsen #5 / NN/g). The guard is
@@ -346,6 +348,9 @@ struct App {
     warn: Option<String>,
     /// In-app Nexus API-key entry (Settings), so users don't edit config files.
     nexus_key_input: String,
+    /// In-app game-install-path entry (Settings) — writes `[game].pristine` so a
+    /// fresh profile stops being "not realized" and can deploy.
+    pristine_input: String,
     new_profile_name: String,
     search: String,
     selected: Option<String>,
@@ -467,6 +472,7 @@ impl App {
             notice: None,
             warn: None,
             nexus_key_input: String::new(),
+            pristine_input: String::new(),
             new_profile_name: String::new(),
             search: String::new(),
             selected: None,
@@ -1167,6 +1173,7 @@ impl App {
             Edit::Move(from, to) => manifest_edit::move_mod(&text, from, to),
             Edit::Remove(name) => manifest_edit::remove_mod(&text, &name),
             Edit::Add(m) => manifest_edit::add_mod(&text, &m),
+            Edit::SetPristine(p) => manifest_edit::set_pristine(&text, p.trim()),
         };
         match edited {
             Ok(new_text) => match concierge::manifest_edit::write_manifest(&path, &new_text) {
@@ -3034,6 +3041,54 @@ impl App {
                         }
                     }
                 });
+                ui.separator();
+                ui.strong("Game install folder");
+                // Owned snapshot so the manifest borrow is released before the
+                // Save button calls self.apply(...).
+                let pristine = self.manifest.as_ref().map(|m| {
+                    let p = &m.game.pristine;
+                    (p.display().to_string(), p.as_os_str().is_empty(), p.exists())
+                });
+                match pristine {
+                    None => {
+                        ui.weak("add a game and create a modpack first");
+                    }
+                    Some((cur, is_empty, exists)) => {
+                        if is_empty {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(220, 170, 90),
+                                "not set — Apply/deploy stays blocked until this points at your game.",
+                            );
+                        } else {
+                            ui.label(format!("current: {cur}"));
+                            if !exists {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(220, 130, 110),
+                                    "\u{26a0} that folder isn't on this machine",
+                                );
+                            }
+                        }
+                        ui.label(
+                            "The folder your game is installed in. Concierge installs a copy — \
+                             your original is never modified.",
+                        );
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.pristine_input)
+                                    .hint_text("/path/to/your/game/install"),
+                            );
+                            if ui.button("Save path").clicked() {
+                                let p = self.pristine_input.trim().to_owned();
+                                if !p.is_empty() {
+                                    self.pristine_input.clear();
+                                    self.apply(Edit::SetPristine(p));
+                                    self.notice =
+                                        Some("Game install folder saved.".to_owned());
+                                }
+                            }
+                        });
+                    }
+                }
                 ui.separator();
                 ui.strong("preferences");
                 ui.checkbox(&mut self.dark, "dark theme");
