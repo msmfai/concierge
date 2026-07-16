@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension as _};
 
 use crate::error::Result;
 
@@ -363,6 +363,21 @@ impl Catalog {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// The `version` column for one mod — which for a Modrinth-synced catalog
+    /// holds the project **slug**, the key needed to resolve a free download.
+    /// `None` if the mod isn't in the catalog.
+    pub fn version_of(&self, game_domain: &str, mod_id: u64) -> Result<Option<String>> {
+        let v = self
+            .conn
+            .query_row(
+                "SELECT version FROM mods WHERE game_domain=?1 AND mod_id=?2",
+                rusqlite::params![game_domain, i64::try_from(mod_id).unwrap_or(0)],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(v)
     }
 }
 

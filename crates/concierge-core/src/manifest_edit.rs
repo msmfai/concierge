@@ -299,6 +299,28 @@ pub fn set_pristine(doc: &str, path: &str) -> Result<String> {
     Ok(d.to_string())
 }
 
+/// Set the pack's `[compat].game_version` and `.loader` — what a Modrinth
+/// (Minecraft) resolve filters on, so "add" picks the right build. An empty
+/// value clears that field. Creates `[compat]` if absent. Format-preserving.
+pub fn set_compat(doc: &str, game_version: &str, loader: &str) -> Result<String> {
+    let mut d = parse(doc)?;
+    if d.get("compat").is_none() {
+        d.insert("compat", Item::Table(Table::new()));
+    }
+    let compat = d
+        .get_mut("compat")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| Error::Manifest("[compat] is not a table".to_owned()))?;
+    for (key, val) in [("game_version", game_version), ("loader", loader)] {
+        if val.is_empty() {
+            compat.remove(key);
+        } else {
+            compat.insert(key, value(val));
+        }
+    }
+    Ok(d.to_string())
+}
+
 /// Remove a mod by name (from the manifest; store/instance cleanup is realize's).
 pub fn remove_mod(doc: &str, name: &str) -> Result<String> {
     let mut d = parse(doc)?;
@@ -423,6 +445,21 @@ version = \"3\"
             again.parse::<DocumentMut>().unwrap()["game"]["pristine"].as_str(),
             Some("/other/path")
         );
+    }
+
+    #[test]
+    fn set_compat_creates_and_clears_game_version_and_loader() {
+        // DOC has no [compat] — it's created.
+        let out = set_compat(DOC, "1.20.1", "fabric").unwrap();
+        let d = out.parse::<DocumentMut>().unwrap();
+        assert_eq!(d["compat"]["game_version"].as_str(), Some("1.20.1"));
+        assert_eq!(d["compat"]["loader"].as_str(), Some("fabric"));
+        assert_eq!(d["game"]["kind"].as_str(), Some("fallout4")); // untouched
+                                                                  // an empty value clears just that field
+        let cleared = set_compat(&out, "1.20.1", "").unwrap();
+        let d2 = cleared.parse::<DocumentMut>().unwrap();
+        assert!(d2["compat"].get("loader").is_none());
+        assert_eq!(d2["compat"]["game_version"].as_str(), Some("1.20.1"));
     }
 
     #[test]
