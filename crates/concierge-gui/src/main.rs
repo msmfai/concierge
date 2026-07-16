@@ -2077,7 +2077,14 @@ impl eframe::App for App {
             self.warn = None;
             match kind {
                 FlashKind::Ok => self.notice = Some(msg),
-                FlashKind::Warn => self.warn = Some(msg),
+                FlashKind::Warn => {
+                    // A Download that left mods still needing a manual fetch —
+                    // pop the guided download session so the queue is right there.
+                    if msg.contains("still needed") || msg.contains("Mod Manager Download") {
+                        self.download_session_open = true;
+                    }
+                    self.warn = Some(msg);
+                }
                 FlashKind::Err => self.error = Some(msg),
             }
         }
