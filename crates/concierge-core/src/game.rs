@@ -88,6 +88,12 @@ pub const MODLIST_LEXICON: Lexicon = Lexicon {
 pub trait GameAdapter: Sync {
     fn kind(&self) -> &'static str;
     fn nexus_domain(&self) -> Option<&'static str>;
+    /// The Modrinth search domain for this game's ecosystem (e.g. `minecraft`),
+    /// if its mods live on Modrinth rather than Nexus. `None` = not Modrinth.
+    /// Drives the catalog browser's provider choice.
+    fn modrinth_domain(&self) -> Option<&'static str> {
+        None
+    }
     /// This game's community vocabulary; overrides generic UI labels. Generic by
     /// default — a game overrides it to speak its players' language.
     fn lexicon(&self) -> Lexicon {
@@ -228,6 +234,7 @@ pub fn adapter_for(kind: &str) -> Result<&'static dyn GameAdapter> {
 #[derive(Debug)]
 pub struct GameShape {
     pub nexus_domain: Option<String>,
+    pub modrinth_domain: Option<String>,
     pub default_root: String,
     pub root_targets: BTreeMap<String, ResolvedRoot>,
     pub configs: Vec<ConfigFile>,
@@ -253,6 +260,7 @@ fn generic_shape() -> GameShape {
     );
     GameShape {
         nexus_domain: None,
+        modrinth_domain: None,
         default_root: "game".to_owned(),
         root_targets,
         configs: Vec::new(),
@@ -273,6 +281,7 @@ pub fn shape_for(m: &Manifest, plugins: &[String]) -> Result<GameShape> {
     if let Some(a) = try_adapter(&m.game.kind) {
         return Ok(GameShape {
             nexus_domain: a.nexus_domain().map(str::to_owned),
+            modrinth_domain: a.modrinth_domain().map(str::to_owned),
             default_root: a.default_install_root().to_owned(),
             root_targets: resolve_roots(a, m)?,
             configs: a.render_configs(m, plugins)?,
@@ -366,6 +375,7 @@ fn custom_shape(m: &Manifest, plugins: &[String]) -> Result<GameShape> {
     };
     Ok(GameShape {
         nexus_domain: c.nexus_domain.clone(),
+        modrinth_domain: c.modrinth_domain.clone(),
         default_root: c.default_root.clone(),
         root_targets,
         configs: render(plugins)?,
