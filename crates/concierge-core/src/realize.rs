@@ -83,7 +83,8 @@ pub fn resolve_layouts(repo: &Repo, plan: &Plan) -> Result<Vec<String>> {
     let mut resolved = Vec::new();
     for m in &plan.mods {
         let Some(md5) = &m.md5 else { continue };
-        let hint = crate::layout::infer_layout(&repo.build_path(md5));
+        let build = repo.build_path(md5);
+        let hint = crate::layout::infer_layout(&build);
         let need_subdir = hint.subdir.is_some() && m.subdir.is_none();
         // Only INFER plugins into an empty list. A non-empty `plugins` is a
         // deliberate curation — e.g. one variant chosen from a FOMOD that ships
@@ -99,30 +100,46 @@ pub fn resolve_layouts(repo: &Repo, plan: &Plan) -> Result<Vec<String>> {
         } else {
             Vec::new()
         };
-        if !need_subdir && missing_plugins.is_empty() {
+        // A script extender (skse64_loader.exe & co. at the archive root) must
+        // deploy to the GAME root, not Data/ — else the loader lands in Data/
+        // and launch can't run the game through it. Detect it and set
+        // `install_root = "game"` (a one-off fix; skip once already there).
+        let need_root = m.install_root != "game" && crate::layout::is_script_extender(&build);
+        let need_layout = need_subdir || !missing_plugins.is_empty();
+        if !need_layout && !need_root {
             continue;
         }
         let mut plugins = m.plugins.clone();
         plugins.extend(missing_plugins);
-        let doc = std::fs::read_to_string(&manifest_path).ctx(&manifest_path)?;
-        let doc = crate::manifest_edit::set_layout(
-            &doc,
-            &m.name,
-            need_subdir.then(|| hint.subdir.as_deref().unwrap_or_default()),
-            &plugins,
-        )?;
+        let mut doc = std::fs::read_to_string(&manifest_path).ctx(&manifest_path)?;
+        if need_layout {
+            doc = crate::manifest_edit::set_layout(
+                &doc,
+                &m.name,
+                need_subdir.then(|| hint.subdir.as_deref().unwrap_or_default()),
+                &plugins,
+            )?;
+        }
+        if need_root {
+            doc = crate::manifest_edit::set_install_root(&doc, &m.name, "game")?;
+        }
         crate::manifest_edit::write_manifest(&manifest_path, &doc)?;
         resolved.push(format!(
-            "resolved layout for {}{}{}",
+            "resolved layout for {}{}{}{}",
             m.name,
             hint.subdir
                 .as_deref()
                 .filter(|_| need_subdir)
                 .map_or(String::new(), |s| format!(" (strip '{s}')")),
-            if plugins.is_empty() {
-                String::new()
-            } else {
+            if need_layout && !plugins.is_empty() {
                 format!(" (plugins: {})", plugins.join(", "))
+            } else {
+                String::new()
+            },
+            if need_root {
+                " (script extender → game root)"
+            } else {
+                ""
             },
         ));
     }

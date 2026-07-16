@@ -165,6 +165,26 @@ pub fn set_layout(
     Ok(d.to_string())
 }
 
+/// Set (or clear) a mod's `install_root` — the named deploy root it lands in
+/// (e.g. `"game"` for a script extender, whose loader must sit beside the game
+/// exe, vs the default `"data"`). An empty `root` removes the key, falling back
+/// to the game's default root.
+pub fn set_install_root(doc: &str, name: &str, root: &str) -> Result<String> {
+    let mut d = parse(doc)?;
+    let mods = mods_mut(&mut d)?;
+    let idx =
+        index_of(mods, name).ok_or_else(|| Error::Manifest(format!("mod '{name}' not found")))?;
+    let Some(t) = mods.get_mut(idx) else {
+        return Err(Error::Manifest(format!("mod '{name}' not found")));
+    };
+    if root.is_empty() {
+        t.remove("install_root");
+    } else {
+        t.insert("install_root", value(root));
+    }
+    Ok(d.to_string())
+}
+
 /// Move the mod at `from` to position `to` (load order == manifest order).
 pub fn move_mod(doc: &str, from: usize, to: usize) -> Result<String> {
     let mut d = parse(doc)?;
@@ -679,6 +699,18 @@ version = \"3\"
         assert!(
             cleared.contains("plugins = [\"Journey.esp\"]"),
             "plugins kept"
+        );
+    }
+
+    #[test]
+    fn set_install_root_sets_and_clears() {
+        let doc = "[[mod]]\nname = \"skse\"\nversion = \"2.0.20\"\n";
+        let out = set_install_root(doc, "skse", "game").unwrap();
+        assert!(out.contains("install_root = \"game\""));
+        let cleared = set_install_root(&out, "skse", "").unwrap();
+        assert!(
+            !cleared.contains("install_root"),
+            "empty root removes the key"
         );
     }
 }
