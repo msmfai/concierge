@@ -71,7 +71,7 @@ original stays pristine — and nothing happens until you click Apply.
 
 ![A “Preview changes” dialog listing four mods to deploy and zero to remove, with the note “Nothing changes until you Apply.”](docs/tour/4-preview.png)
 
-**5 · It never fakes a finish.** If some mods still need downloading, Concierge
+**5 · It won't pretend a mod is installed.** If some mods still need downloading, Concierge
 says so and tells you exactly how to get them — one click on the mod's page, or
 drop the file into your Downloads folder — instead of flashing a green “done”
 over an install that isn't actually ready.
