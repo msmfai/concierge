@@ -258,6 +258,10 @@ enum Cmd {
     /// Handle an `nxm://…` link (from the site's Mod Manager Download button):
     /// add the mod to the active profile, pinned to that file
     Nxm { url: String },
+    /// Add a Modrinth mod (by slug or project id) to the active profile. Resolves
+    /// the newest version matching the pack's game version + loader to a free CDN
+    /// download (no key), then `download`/`realize` fetches it.
+    Modrinth { project: String },
     /// Export this profile's pack (its `manifest.toml` recipe) to a shareable file
     ExportPack { dest: String },
     /// Import a shared pack into a new profile, keeping this machine's game paths
@@ -1859,6 +1863,37 @@ fn run() -> Result<()> {
                 .map_err(|e| Error::Other(e.to_string()))?;
             std::fs::write(&path, new).map_err(|e| Error::Other(format!("write: {e}")))?;
             println!("  added '{name}' (nexus {} file {})", n.mod_id, n.file_id);
+        }
+        Cmd::Modrinth { project } => {
+            // Resolve against the pack's declared Minecraft version + loader so
+            // we pick the right build; unset filters fall back to the newest.
+            let manifest = Manifest::load(&repo.profile)?;
+            let gv = manifest.compat.game_version.as_deref();
+            let loader = manifest.compat.loader.as_deref();
+            let r = concierge_db::modrinth::resolve(&project, gv, loader)
+                .map_err(|e| Error::Other(e.to_string()))?;
+            println!(
+                "  resolved {project} {} → {} (free: {})",
+                r.version_number, r.filename, r.url
+            );
+            let path = repo.profile.join("manifest.toml");
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| Error::Other(format!("read manifest: {e}")))?;
+            let entry = concierge::manifest_edit::NewMod {
+                name: project.clone(),
+                version: r.version_number,
+                // A plain HTTPS CDN URL — the existing url-source path downloads
+                // it for free and pins the computed md5 on first fetch.
+                source: concierge::manifest_edit::NewSource::Url(r.url),
+                md5: String::new(),
+                file: r.filename,
+                install_root: "data".to_owned(),
+                plugins: Vec::new(),
+            };
+            let new = concierge::manifest_edit::add_mod(&text, &entry)
+                .map_err(|e| Error::Other(e.to_string()))?;
+            std::fs::write(&path, new).map_err(|e| Error::Other(format!("write: {e}")))?;
+            println!("  added '{project}' from Modrinth — run `download` to fetch it (free).");
         }
         Cmd::ExportPack { dest } => {
             let src = repo.profile.join("manifest.toml");

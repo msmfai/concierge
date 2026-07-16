@@ -157,7 +157,11 @@ pub fn pick_file(
     // ISO-8601 dates sort lexicographically; newest first.
     matches.sort_by(|a, b| b.date_published.cmp(&a.date_published));
     let v = matches.first()?;
-    let f = v.files.iter().find(|f| f.primary).or_else(|| v.files.first())?;
+    let f = v
+        .files
+        .iter()
+        .find(|f| f.primary)
+        .or_else(|| v.files.first())?;
     Some(Resolved {
         url: f.url.clone(),
         filename: f.filename.clone(),
@@ -173,7 +177,11 @@ pub fn pick_file(
 ///
 /// # Errors
 /// Network/HTTP failure, or no version matching the filters.
-pub fn resolve(project: &str, game_version: Option<&str>, loader: Option<&str>) -> Result<Resolved> {
+pub fn resolve(
+    project: &str,
+    game_version: Option<&str>,
+    loader: Option<&str>,
+) -> Result<Resolved> {
     let versions = fetch_versions(project)?;
     pick_file(&versions, game_version, loader).ok_or_else(|| {
         Error::Other(format!(
@@ -234,7 +242,9 @@ mod tests {
         // Loader filter keeps forge-only out even though it's newest overall.
         // With no loader filter, forge-only (newest) wins.
         assert_eq!(
-            pick_file(&versions, Some("1.20.1"), None).unwrap().version_number,
+            pick_file(&versions, Some("1.20.1"), None)
+                .unwrap()
+                .version_number,
             "forge-only"
         );
         // No version matches an unknown game version.
