@@ -379,6 +379,8 @@ struct App {
     /// Live catalog-sync progress (Some while a sync runs) — shown in Browse so
     /// it doesn't look frozen.
     sync_progress: Arc<std::sync::Mutex<Option<String>>>,
+    /// When the current catalog sync started — drives the progress bar's ETA.
+    sync_started: Arc<std::sync::Mutex<Option<std::time::Instant>>>,
     browse_hits: Vec<CatalogHit>,
     browse_msg: String,
     /// First-class category filter: None = all categories.
@@ -491,6 +493,7 @@ impl App {
             nxm_input: String::new(),
             nexus_account: Arc::new(std::sync::Mutex::new(String::new())),
             sync_progress: Arc::new(std::sync::Mutex::new(None)),
+            sync_started: Arc::new(std::sync::Mutex::new(None)),
             browse_hits: Vec::new(),
             browse_msg: String::new(),
             browse_category: None,
@@ -1823,6 +1826,43 @@ fn record_audit_ok(repo: &Repo, mod_id: u64, name: &str) {
 
 /// Is the `claude` CLI on PATH? Determines whether the agent terminal runs
 /// the real agent or falls back to a plain shell.
+/// Parse "<done>/<total>" out of a catalog-sync progress line.
+fn parse_sync_counts(line: &str) -> Option<(u64, u64)> {
+    line.split_whitespace().find_map(|tok| {
+        let (done_str, total_str) = tok.split_once('/')?;
+        let done = done_str.parse::<u64>().ok()?;
+        let total = total_str.parse::<u64>().ok()?;
+        (total > 0).then_some((done, total))
+    })
+}
+
+/// Human sync progress from a raw line + elapsed seconds: `(fraction 0..=1,
+/// label)`. `None` until the first "N/total" appears (the initial one-time
+/// message), so the caller shows an indeterminate spinner then a real bar.
+fn sync_bar(line: &str, elapsed_secs: u64) -> Option<(f32, String)> {
+    let (done, total) = parse_sync_counts(line)?;
+    let pct = done.saturating_mul(100) / total; // integer 0..=100, no float cast
+    let frac = f32::from(u16::try_from(pct.min(100)).unwrap_or(100)) / 100.0;
+    let eta = if done > 0 && done < total && elapsed_secs >= 2 {
+        let remaining = elapsed_secs.saturating_mul(total - done) / done;
+        format!(" · ~{} left", fmt_dur(remaining))
+    } else {
+        String::new()
+    };
+    Some((frac, format!("{done} / {total} mods · {pct}%{eta}")))
+}
+
+/// Compact duration for the ETA ("45 sec", "6 min", "1h 3m").
+fn fmt_dur(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs >= 60 {
+        format!("{} min", secs / 60)
+    } else {
+        format!("{} sec", secs.max(1))
+    }
+}
+
 fn which_agent_available() -> bool {
     std::process::Command::new("claude")
         .arg("--version")
@@ -3082,10 +3122,21 @@ impl App {
                 // Catalog sync affordance — fixes the dead-end "is the catalog
                 // synced?" by saying so and offering the fix in place.
                 if let Some(msg) = &syncing {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(msg);
-                    });
+                    let elapsed = self
+                        .sync_started
+                        .lock()
+                        .ok()
+                        .and_then(|g| *g)
+                        .map_or(0, |t| t.elapsed().as_secs());
+                    if let Some((frac, label)) = sync_bar(msg, elapsed) {
+                        ui.add(egui::ProgressBar::new(frac).text(label).animate(true));
+                        ui.weak("showing mods as they download — search works already");
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(msg);
+                        });
+                    }
                     ui.separator();
                 } else if let Some((d, (rows_n, synced))) = &status {
                     ui.horizontal(|ui| {
@@ -3377,6 +3428,7 @@ impl App {
             Arc::clone(&self.browse_refresh),
         );
         let prog = Arc::clone(&self.sync_progress);
+        let started = Arc::clone(&self.sync_started);
         let set_prog = |g: &Arc<std::sync::Mutex<Option<String>>>, v: Option<String>| {
             if let Ok(mut lock) = g.lock() {
                 *lock = v;
@@ -3386,29 +3438,45 @@ impl App {
             &prog,
             Some("Downloading the mod list… (one-time, can take a couple of minutes)".to_owned()),
         );
+        if let Ok(mut s) = started.lock() {
+            *s = Some(std::time::Instant::now());
+        }
         std::thread::spawn(move || {
             let _ = tx.send(format!("> syncing {domain} catalog…"));
             match concierge_db::catalog::Catalog::open(&repo.catalog_path()) {
-                Ok(mut cat) => match concierge_db::sync::sync_game(&mut cat, &domain, &mut |l| {
-                    let _ = tx.send(l.to_owned());
-                    set_prog(
-                        &prog,
-                        Some(format!("Downloading the mod list… {}", l.trim())),
-                    );
-                }) {
-                    Ok(r) => {
-                        let _ = tx.send(format!("catalog synced: {} rows", r.rows_synced));
-                        refresh.store(true, Ordering::SeqCst); // re-search with fresh data
+                Ok(mut cat) => {
+                    let mut pages = 0u32;
+                    match concierge_db::sync::sync_game(&mut cat, &domain, &mut |l| {
+                        let _ = tx.send(l.to_owned());
+                        set_prog(
+                            &prog,
+                            Some(format!("Downloading the mod list… {}", l.trim())),
+                        );
+                        // Stream what's downloaded so far into an open browser
+                        // (WAL lets the search read mid-sync) — no more waiting
+                        // for the whole catalog before you can look at anything.
+                        pages = pages.wrapping_add(1);
+                        if pages.is_multiple_of(15) {
+                            refresh.store(true, Ordering::SeqCst);
+                        }
+                    }) {
+                        Ok(r) => {
+                            let _ = tx.send(format!("catalog synced: {} rows", r.rows_synced));
+                            refresh.store(true, Ordering::SeqCst); // final re-search
+                        }
+                        Err(e) => {
+                            let _ = tx.send(format!("catalog sync failed: {e}"));
+                        }
                     }
-                    Err(e) => {
-                        let _ = tx.send(format!("catalog sync failed: {e}"));
-                    }
-                },
+                }
                 Err(e) => {
                     let _ = tx.send(format!("catalog open failed: {e}"));
                 }
             }
             set_prog(&prog, None);
+            if let Ok(mut s) = started.lock() {
+                *s = None;
+            }
             busy.store(false, Ordering::SeqCst);
         });
     }
@@ -3785,8 +3853,25 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::preferred_adapter;
+    use super::{preferred_adapter, sync_bar};
     use eframe::wgpu::Backend;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn sync_bar_parses_counts_percent_and_eta() {
+        // Initial one-time message has no counts yet → indeterminate (None).
+        assert!(sync_bar("Downloading the mod list… (one-time, …)", 0).is_none());
+        // Mid-sync: 3660 of 73005 rows after 30s → ~5%, ETA in minutes.
+        let (frac, label) =
+            sync_bar("Downloading the mod list… page   47   3660/73005 rows", 30).unwrap();
+        assert!((frac - 0.05).abs() < 0.02, "fraction ~5%, got {frac}");
+        assert!(label.starts_with("3660 / 73005 mods · 5%"), "got: {label}");
+        assert!(label.contains("min left"), "should show an ETA: {label}");
+        // Complete: full bar, no ETA suffix.
+        let (frac, label) = sync_bar("… 73005/73005 rows", 900).unwrap();
+        assert!((frac - 1.0).abs() < f32::EPSILON, "full bar, got {frac}");
+        assert!(!label.contains("left"), "no ETA at 100%: {label}");
+    }
 
     #[test]
     fn prefers_vulkan_over_dx12() {
