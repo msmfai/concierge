@@ -310,11 +310,73 @@ pub fn register_nxm_handler(exe: &std::path::Path) -> Result<String, String> {
         Ok("1-click downloads enabled. Now click \"Mod Manager Download\" on any Nexus \
             mod page and it lands here."
             .to_owned())
+    } else if cfg!(target_os = "macos") {
+        register_nxm_macos(&exe)
     } else {
-        Err("Automatic nxm:// registration isn't wired up on this OS yet — on macOS the \
-             app bundle declares the scheme; see the docs."
-            .to_owned())
+        Err("Automatic nxm:// registration isn't wired up on this OS yet.".to_owned())
     }
+}
+
+/// macOS has no per-user scheme registration for a bare binary — the established
+/// trick is a tiny `AppleScript` applet with an `on open location` handler that
+/// shells out to `concierge nxm <url>`. We compile one into `~/Applications`,
+/// declare the `nxm` scheme in its `Info.plist`, and register it with
+/// `LaunchServices`.
+#[cfg(target_os = "macos")]
+fn register_nxm_macos(exe: &str) -> Result<String, String> {
+    use std::process::Command;
+    let apps = home_dir().join("Applications");
+    std::fs::create_dir_all(&apps).map_err(|e| e.to_string())?;
+    let app = apps.join("Concierge nxm.app");
+    let _ = std::fs::remove_dir_all(&app);
+
+    // `on open location` receives the URL as an Apple Event — the one way a
+    // scriptable handler (not a full Cocoa app) can catch a scheme.
+    let script = format!(
+        "on open location this_URL\n\
+         \tdo shell script \"{exe} nxm \" & quoted form of this_URL\n\
+         end open location\n"
+    );
+    let src = std::env::temp_dir().join("concierge-nxm.applescript");
+    std::fs::write(&src, script).map_err(|e| e.to_string())?;
+    let ok = Command::new("osacompile")
+        .args(["-o".as_ref(), app.as_os_str(), src.as_os_str()])
+        .status()
+        .map_err(|e| e.to_string())?
+        .success();
+    if !ok {
+        return Err("couldn't build the nxm helper app (osacompile failed)".to_owned());
+    }
+
+    // Declare the nxm scheme in the compiled app's Info.plist.
+    let plist = app.join("Contents").join("Info.plist");
+    let pb = |args: &[&str]| {
+        Command::new("/usr/libexec/PlistBuddy")
+            .arg("-c")
+            .args(args)
+            .arg(&plist)
+            .status()
+    };
+    let _ = pb(&["Add :CFBundleURLTypes array"]);
+    let _ = pb(&["Add :CFBundleURLTypes:0 dict"]);
+    let _ = pb(&["Add :CFBundleURLTypes:0:CFBundleURLName string com.msmfai.concierge.nxm"]);
+    let _ = pb(&["Add :CFBundleURLTypes:0:CFBundleURLSchemes array"]);
+    let _ = pb(&["Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string nxm"]);
+
+    // Make LaunchServices aware of it so nxm:// routes here.
+    let lsregister = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/\
+                      LaunchServices.framework/Versions/A/Support/lsregister";
+    let _ = Command::new(lsregister).arg("-f").arg(&app).status();
+    Ok(format!(
+        "1-click downloads enabled ({}). Click \"Mod Manager Download\" on a Nexus page; \
+         if macOS asks which app opens nxm links, pick Concierge nxm.",
+        app.display()
+    ))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn register_nxm_macos(_exe: &str) -> Result<String, String> {
+    Err("not macOS".to_owned())
 }
 
 /// The per-user config directory, `$XDG_CONFIG_HOME/concierge` or
