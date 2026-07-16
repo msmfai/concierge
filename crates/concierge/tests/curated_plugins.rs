@@ -129,3 +129,73 @@ fn resolve_layouts_still_infers_into_an_empty_list() {
 
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn resolve_layouts_installs_a_script_extender_to_the_game_root() {
+    // A script extender (F4SE) ships f4se_loader.exe + Data/ at the archive
+    // root. It must deploy to the GAME root, not Data/ — else the loader lands
+    // in Data/ and launch can't run the game through it. resolve_layouts must
+    // detect it and set install_root = "game" even though there's no subdir to
+    // strip and no plugin to activate (the case the old early-continue skipped).
+    concierge_games::register();
+    let base = std::env::temp_dir().join(format!("cg-se-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    std::fs::write(base.join(".concierge-workspace"), "").unwrap();
+    let pristine = base.join("Fallout 4");
+    std::fs::create_dir_all(pristine.join("Data")).unwrap();
+    let profile = base.join("games/fallout4/profiles/test");
+    std::fs::create_dir_all(&profile).unwrap();
+    let manifest_path = profile.join("manifest.toml");
+
+    // A pinned F4SE mod with NO install_root declared (defaults to "data").
+    let md5 = "fedcba9876543210fedcba9876543210";
+    std::fs::write(
+        &manifest_path,
+        format!(
+            "[game]\nkind = \"fallout4\"\npristine = \"{}\"\ninstance = \"{}/instance\"\n\
+             version = \"1.11.221\"\n\
+             [game.paths]\nplugins_txt = \"{base}/plugins.txt\"\nmy_games = \"{base}/mg\"\n\n\
+             [[mod]]\nname = \"f4se\"\nversion = \"0.7.2\"\n\
+             url = \"https://example/f4se.7z\"\nmd5 = \"{md5}\"\nfile = \"f4se.7z\"\n",
+            pristine.display(),
+            base.display(),
+            base = base.display(),
+        ),
+    )
+    .unwrap();
+
+    let repo = concierge::repo::Repo::at(&profile);
+    // Seed the build tree like a real F4SE archive: loader + dll + Data/ at root.
+    let build = repo.build_path(md5);
+    touch(&build.join("f4se_loader.exe"));
+    touch(&build.join("f4se_1_10_984.dll"));
+    touch(&build.join("Data").join("Scripts").join("Actor.pex"));
+
+    let plan =
+        concierge::plan::eval(&concierge::manifest::Manifest::load(&profile).unwrap()).unwrap();
+    let changed = concierge::realize::resolve_layouts(&repo, &plan).unwrap();
+
+    assert!(
+        changed
+            .iter()
+            .any(|l| l.contains("f4se") && l.contains("game root")),
+        "script extender should be re-rooted to game: {changed:?}"
+    );
+    let m = std::fs::read_to_string(&manifest_path).unwrap();
+    assert!(
+        m.contains("install_root = \"game\""),
+        "install_root flipped to game:\n{m}"
+    );
+
+    // Idempotent: a second pass sees install_root = "game" and does nothing.
+    let plan2 =
+        concierge::plan::eval(&concierge::manifest::Manifest::load(&profile).unwrap()).unwrap();
+    let changed2 = concierge::realize::resolve_layouts(&repo, &plan2).unwrap();
+    assert!(
+        !changed2.iter().any(|l| l.contains("f4se")),
+        "already-rooted extender is not re-resolved: {changed2:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&base);
+}

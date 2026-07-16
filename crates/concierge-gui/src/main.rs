@@ -388,6 +388,9 @@ struct App {
     undo: Vec<String>,
     settings_open: bool,
     diff_open: bool,
+    /// The enriched Preview text, computed once when the window opens (the
+    /// per-file conflict scan touches disk, so it must stay off the render path).
+    preview_lines: Vec<String>,
     browse_open: bool,
     /// The Wabbajack-style guided download queue window.
     download_session_open: bool,
@@ -511,6 +514,7 @@ impl App {
             undo: Vec::new(),
             settings_open: false,
             diff_open: false,
+            preview_lines: Vec::new(),
             browse_open: false,
             download_session_open: false,
             browse_query: String::new(),
@@ -812,58 +816,104 @@ impl App {
             });
         }
         if self.diff_open {
-            let mut lines = vec![
-                "Preview of your Setup vs what is Installed. Nothing changes until you Apply."
-                    .to_owned(),
-            ];
-            let realized = self
-                .active_repo()
-                .and_then(|r| Realized::load(&r).ok())
-                .unwrap_or_default();
-            let mut per_mod: std::collections::BTreeMap<String, usize> =
-                std::collections::BTreeMap::new();
-            for rec in realized.files.values() {
-                *per_mod.entry(rec.mod_name.clone()).or_default() += 1;
-            }
-            let enabled: Vec<&str> = self.manifest.as_ref().map_or_else(Vec::new, |m| {
-                m.mods
-                    .iter()
-                    .filter(|md| md.enabled)
-                    .map(|md| md.name.as_str())
-                    .collect()
-            });
-            let adds: Vec<&str> = enabled
-                .iter()
-                .copied()
-                .filter(|n| !per_mod.contains_key(*n))
-                .collect();
-            let removes: Vec<&str> = per_mod
-                .keys()
-                .filter(|n| !enabled.contains(&n.as_str()))
-                .map(String::as_str)
-                .collect();
-            lines.push(format!("+ deploy ({})", adds.len()));
-            lines.extend(adds.iter().map(|a| format!("   + {a}")));
-            lines.push(format!("- remove ({})", removes.len()));
-            lines.extend(removes.iter().map(|r| format!("   - {r}")));
-            let lex = self.active_lexicon();
-            let order = self.plan.as_ref().map_or_else(Vec::new, load_order);
-            let realised_order = self.plan.as_ref().map_or_else(Vec::new, deployed_order);
-            if order == realised_order {
-                lines.push(format!("{} unchanged", lex.order));
-            } else {
-                lines.push(format!("~ {} will change", lex.order));
-            }
-            if adds.is_empty() && removes.is_empty() && order == realised_order {
-                lines.push("No pending changes — Installed matches your Setup.".to_owned());
-            }
             panels.push(concierge_ui::Panel {
                 id: "preview".into(),
                 title: "Preview changes".into(),
-                lines,
+                lines: self.preview_lines.clone(),
             });
         }
         panels
+    }
+
+    /// Compute the enriched Preview text once (on open): the mod add/remove
+    /// summary, the per-plugin load-order delta, and per-file overwrite
+    /// conflicts (which mod wins each shared path, MO2-style). Kept out of the
+    /// per-frame render path because the conflict scan touches disk.
+    fn compute_preview_lines(&self) -> Vec<String> {
+        let mut lines = vec![
+            "Preview of your Setup vs what is Installed. Nothing changes until you Apply."
+                .to_owned(),
+        ];
+        let realized = self
+            .active_repo()
+            .and_then(|r| Realized::load(&r).ok())
+            .unwrap_or_default();
+        let mut per_mod: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for rec in realized.files.values() {
+            *per_mod.entry(rec.mod_name.clone()).or_default() += 1;
+        }
+        let enabled: Vec<&str> = self.manifest.as_ref().map_or_else(Vec::new, |m| {
+            m.mods
+                .iter()
+                .filter(|md| md.enabled)
+                .map(|md| md.name.as_str())
+                .collect()
+        });
+        let adds: Vec<&str> = enabled
+            .iter()
+            .copied()
+            .filter(|n| !per_mod.contains_key(*n))
+            .collect();
+        let removes: Vec<&str> = per_mod
+            .keys()
+            .filter(|n| !enabled.contains(&n.as_str()))
+            .map(String::as_str)
+            .collect();
+        lines.push(format!("+ deploy ({})", adds.len()));
+        lines.extend(adds.iter().map(|a| format!("   + {a}")));
+        lines.push(format!("- remove ({})", removes.len()));
+        lines.extend(removes.iter().map(|r| format!("   - {r}")));
+
+        let lex = self.active_lexicon();
+        let order = self.plan.as_ref().map_or_else(Vec::new, load_order);
+        let realised_order = self.plan.as_ref().map_or_else(Vec::new, deployed_order);
+        if order == realised_order {
+            lines.push(format!("{} unchanged", lex.order));
+        } else {
+            lines.push(format!("~ {} will change:", lex.order));
+            lines.extend(order_delta_lines(&realised_order, &order));
+        }
+
+        // Per-file overwrites — which mod wins each shared path (MO2-style: the
+        // last mod in load order wins). Only the real (non-benign) overwrites
+        // are worth surfacing; identical bytes are a no-op.
+        if let (Some(repo), Some(plan)) = (self.active_repo(), self.plan.as_ref()) {
+            if let Ok(conflicts) = concierge_pluginorder::assets::asset_conflicts(&repo, plan) {
+                let real: Vec<_> = conflicts.iter().filter(|c| !c.benign).collect();
+                if !real.is_empty() {
+                    lines.push(format!(
+                        "~ {} file overwrite(s) — the later mod wins:",
+                        real.len()
+                    ));
+                    for c in real.iter().take(PREVIEW_CONFLICT_CAP) {
+                        let losers: Vec<&str> = c
+                            .providers
+                            .iter()
+                            .filter(|p| **p != c.winner)
+                            .map(String::as_str)
+                            .collect();
+                        lines.push(format!(
+                            "   ~ {} — {} wins over {}",
+                            c.path,
+                            c.winner,
+                            losers.join(", ")
+                        ));
+                    }
+                    if real.len() > PREVIEW_CONFLICT_CAP {
+                        lines.push(format!(
+                            "   … and {} more",
+                            real.len() - PREVIEW_CONFLICT_CAP
+                        ));
+                    }
+                }
+            }
+        }
+
+        if adds.is_empty() && removes.is_empty() && order == realised_order {
+            lines.push("No pending changes — Installed matches your Setup.".to_owned());
+        }
+        lines
     }
 
     /// This frame's [`concierge_ui::Screen`] — the single source of truth the
@@ -931,7 +981,10 @@ impl App {
                     self.add_catalog_hit(mod_id, &name);
                 }
             }
-            "open_preview" => self.diff_open = true,
+            "open_preview" => {
+                self.diff_open = true;
+                self.preview_lines = self.compute_preview_lines();
+            }
             "close_preview" => self.diff_open = false,
             "undo" => self.undo_edit(),
             // confirm dialog
@@ -1377,6 +1430,36 @@ impl App {
 
 /// The enabled plugin load order the game will read (DLC + mod plugins), pulled
 /// from the plan's generated `plugins.txt` config.
+/// Cap on how many per-file overwrite conflicts the Preview lists (the rest are
+/// summarised as "… and N more") so a heavy modlist can't flood the window.
+const PREVIEW_CONFLICT_CAP: usize = 12;
+
+/// Per-plugin load-order delta between the deployed order and the planned order
+/// — the plugins added to or dropped from the order, plus a note when the
+/// surviving plugins are resequenced. This is the "what actually moves on Apply"
+/// detail behind the one-line "load order will change".
+fn order_delta_lines(deployed: &[String], planned: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for a in planned.iter().filter(|p| !deployed.iter().any(|d| d == *p)) {
+        out.push(format!("   + {a}"));
+    }
+    for r in deployed.iter().filter(|d| !planned.iter().any(|p| p == *d)) {
+        out.push(format!("   - {r}"));
+    }
+    let common_planned: Vec<&String> = planned
+        .iter()
+        .filter(|p| deployed.iter().any(|d| d == *p))
+        .collect();
+    let common_deployed: Vec<&String> = deployed
+        .iter()
+        .filter(|d| planned.iter().any(|p| p == *d))
+        .collect();
+    if common_planned != common_deployed {
+        out.push("   ~ existing plugins resequenced".to_owned());
+    }
+    out
+}
+
 fn load_order(plan: &Plan) -> Vec<String> {
     // Identify the plugins.txt config by filename OR (when the path is a blank
     // placeholder, e.g. a fresh profile) by content — the load-order config is
@@ -2386,8 +2469,9 @@ impl eframe::App for App {
                         });
                     }
                     // Script-extender heads-up when the pack declares it needs one
-                    // (i4c2: "no SKSE warning"). Concierge launches through the
-                    // extender but doesn't install it — it's a separate download.
+                    // (i4c2: "no SKSE warning"). Concierge now installs it for you:
+                    // add the archive and converge detects the loader and deploys
+                    // it to the game root (see realize::resolve_layouts).
                     if let Some(se) = self
                         .manifest
                         .as_ref()
@@ -2396,11 +2480,22 @@ impl eframe::App for App {
                         ui.colored_label(
                             egui::Color32::from_rgb(220, 170, 90),
                             format!(
-                                "\u{2699} Needs a script extender (SKSE/F4SE) \u{2265} {se} — \
-                                 install it into your game folder (silverlock.org); Concierge \
-                                 launches the game through it."
+                                "\u{2699} This pack needs a script extender (SKSE/F4SE) \u{2265} {se}. \
+                                 Get the archive from silverlock.org, then add it below — Concierge \
+                                 installs it to your game folder and launches the game through it."
                             ),
                         );
+                        if ui
+                            .button("\u{2795} Add script extender\u{2026}")
+                            .on_hover_text(
+                                "Opens the add-a-mod form. Paste the SKSE/F4SE download URL; \
+                                 Concierge detects the loader in the archive and installs it to \
+                                 the game root automatically (no need to set install_root).",
+                            )
+                            .clicked()
+                        {
+                            self.add.open = true;
+                        }
                     }
                     // RELATIONAL — cross-mod concerns, kept distinct from the mods.
                     if bethesda && !order.is_empty() {
@@ -4412,8 +4507,36 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{preferred_adapter, sync_bar};
+    use super::{order_delta_lines, preferred_adapter, sync_bar};
     use eframe::wgpu::Backend;
+
+    #[test]
+    fn order_delta_reports_added_removed_and_resequenced() {
+        let s = |v: &[&str]| v.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+        // Added + removed plugins, common order preserved.
+        let out = order_delta_lines(&s(&["A.esp", "B.esp"]), &s(&["A.esp", "C.esp"]));
+        assert!(out.iter().any(|l| l.contains("+ C.esp")), "added: {out:?}");
+        assert!(
+            out.iter().any(|l| l.contains("- B.esp")),
+            "removed: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|l| l.contains("resequenced")),
+            "A stayed put: {out:?}"
+        );
+        // Same set, order flipped → resequenced note, no add/remove lines.
+        let out2 = order_delta_lines(&s(&["A.esp", "B.esp"]), &s(&["B.esp", "A.esp"]));
+        assert!(
+            out2.iter().any(|l| l.contains("resequenced")),
+            "reorder detected: {out2:?}"
+        );
+        assert!(
+            !out2
+                .iter()
+                .any(|l| l.starts_with("   +") || l.starts_with("   -")),
+            "no phantom add/remove: {out2:?}"
+        );
+    }
 
     #[test]
     #[allow(clippy::unwrap_used)]
