@@ -120,6 +120,27 @@ Runtime dependency: `bsdtar` (preinstalled on macOS and Windows 10+;
 `libarchive-tools` on Linux). More detail in [docs/](docs/) and the
 [release notes](RELEASE_NOTES.md).
 
+## Modeled on how people actually mod
+
+Every modding scene grew up differently, and Concierge follows those grooves
+instead of flattening them into one clean abstraction. It is opinionated on
+purpose.
+
+- **Foundational tools are promoted, not filed away as ordinary mods.** A
+  script extender — SKSE, F4SE, and the other xSE loaders — is not just another
+  row in the list: Concierge installs it to the game root, launches the game
+  through it, and surfaces it as the foundational thing it is. Each game's crate
+  decides what it promotes (a game with no such tool promotes nothing), and it
+  stays optional — you choose whether to install one.
+- **It mirrors the conventions the community actually built**, rather than
+  inventing its own: LOOT rules for load order, FOMOD installer choices recorded
+  once and replayed, and last-in-wins file overwrite the way MO2 and Vortex
+  trained everyone to expect.
+- **No forced universal model.** There is deliberately no grand cross-game
+  ontology in the core — the core only knows how to download, verify, deploy,
+  sort, and roll back, while each game crate carries that game's real
+  conventions. Being opinionated per community beats being uniformly wrong.
+
 ## Contributing
 
 Bug reports and feature requests: [issues](https://github.com/msmfai/concierge/issues).
