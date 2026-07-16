@@ -33,9 +33,6 @@ jobs:
           - os: macos-latest
             label: aarch64-macos
             archive: tar.gz
-          - os: macos-13
-            label: x86_64-macos
-            archive: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
