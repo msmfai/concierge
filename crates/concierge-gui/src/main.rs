@@ -2553,10 +2553,7 @@ impl App {
                     .selected_text("+ add game")
                     .show_ui(ui, |ui| {
                         // Type-to-filter the ~45-game list (i5c1, i4c3).
-                        ui.add(
-                            egui::TextEdit::singleline(&mut filter)
-                                .hint_text("filter games…"),
-                        );
+                        ui.add(egui::TextEdit::singleline(&mut filter).hint_text("filter games…"));
                         let needle = filter.to_lowercase();
                         for kind in concierge_games::kinds() {
                             let name = concierge_games::display_name(kind);
@@ -3532,10 +3529,7 @@ impl App {
         }
         let mut open = true;
         let repo = self.active_repo();
-        let domain = self
-            .plan
-            .as_ref()
-            .and_then(|p| p.game.nexus_domain.clone());
+        let domain = self.plan.as_ref().and_then(|p| p.game.nexus_domain.clone());
         let mods = self.plan.as_ref().map_or_else(Vec::new, |p| p.mods.clone());
         let total = mods.len();
         let needed: Vec<&concierge::plan::PlannedMod> = mods
@@ -3558,8 +3552,7 @@ impl App {
             .default_width(480.0)
             .show(ctx, |ui| {
                 ui.add(
-                    egui::ProgressBar::new(frac)
-                        .text(format!("{have} of {total} mods downloaded")),
+                    egui::ProgressBar::new(frac).text(format!("{have} of {total} mods downloaded")),
                 );
                 ui.small(
                     "Free account? Turn on \"Enable 1-click downloads\" in Settings first. \
@@ -3574,42 +3567,44 @@ impl App {
                     );
                     return;
                 }
-                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-                    for m in &needed {
-                        ui.horizontal(|ui| {
-                            ui.label(&m.name);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| match (&m.source, domain.as_deref()) {
-                                    (
-                                        concierge::plan::Source::Nexus { mod_id, file_id },
-                                        Some(d),
-                                    ) => {
-                                        if ui
-                                            .button("Open Nexus page")
-                                            .on_hover_text(
-                                                "click \"Mod Manager Download\" there",
-                                            )
-                                            .clicked()
-                                        {
-                                            let _ = concierge_platform::open_url(
-                                                &concierge::nexus::file_page_url(
-                                                    d, *mod_id, *file_id,
-                                                ),
-                                            );
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        for m in &needed {
+                            ui.horizontal(|ui| {
+                                ui.label(&m.name);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| match (&m.source, domain.as_deref()) {
+                                        (
+                                            concierge::plan::Source::Nexus { mod_id, file_id },
+                                            Some(d),
+                                        ) => {
+                                            if ui
+                                                .button("Open Nexus page")
+                                                .on_hover_text(
+                                                    "click \"Mod Manager Download\" there",
+                                                )
+                                                .clicked()
+                                            {
+                                                let _ = concierge_platform::open_url(
+                                                    &concierge::nexus::file_page_url(
+                                                        d, *mod_id, *file_id,
+                                                    ),
+                                                );
+                                            }
                                         }
-                                    }
-                                    (concierge::plan::Source::Url { .. }, _) => {
-                                        ui.weak("direct URL — use Download");
-                                    }
-                                    _ => {
-                                        ui.weak("downloads via Download");
-                                    }
-                                },
-                            );
-                        });
-                    }
-                });
+                                        (concierge::plan::Source::Url { .. }, _) => {
+                                            ui.weak("direct URL — use Download");
+                                        }
+                                        _ => {
+                                            ui.weak("downloads via Download");
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    });
             });
         // While a download is in flight, keep repainting so items drop off live.
         if self.busy.load(Ordering::SeqCst) {
@@ -3745,8 +3740,7 @@ impl App {
                             ui.add_enabled(false, egui::Button::new("✓ In pack"));
                         } else if let Some(tr) = add {
                             let btn = egui::Button::new(
-                                egui::RichText::new("＋ Add to pack")
-                                    .color(egui::Color32::WHITE),
+                                egui::RichText::new("＋ Add to pack").color(egui::Color32::WHITE),
                             )
                             .fill(egui::Color32::from_rgb(78, 141, 74));
                             if ui

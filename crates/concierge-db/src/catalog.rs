@@ -449,11 +449,23 @@ mod tests {
 
         // "page 1" of a sync lands.
         writer
-            .upsert(&[row("cyberpunk2077", 1, "Cyber Engine Tweaks", 227_000, 17_000_000)])
+            .upsert(&[row(
+                "cyberpunk2077",
+                1,
+                "Cyber Engine Tweaks",
+                227_000,
+                17_000_000,
+            )])
             .unwrap();
         // A separate reader opens mid-sync and can already search page 1.
         let reader = Catalog::open(&path).unwrap();
-        assert_eq!(reader.search("cyberpunk2077", "engine", "", 10).unwrap().len(), 1);
+        assert_eq!(
+            reader
+                .search("cyberpunk2077", "engine", "", 10)
+                .unwrap()
+                .len(),
+            1
+        );
         // "page 2" lands on the writer; the same reader now sees it too.
         writer
             .upsert(&[row("cyberpunk2077", 2, "redscript", 158_000, 11_000_000)])

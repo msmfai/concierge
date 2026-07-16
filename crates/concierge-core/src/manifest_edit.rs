@@ -417,7 +417,7 @@ version = \"3\"
         assert_eq!(d["game"]["kind"].as_str(), Some("fallout4")); // untouched
         assert!(out.contains("# keep this comment")); // comments survive
         assert_eq!(names(&out), vec!["aaa", "bbb", "ccc"]); // mods untouched
-        // re-setting overwrites rather than duplicating
+                                                            // re-setting overwrites rather than duplicating
         let again = set_pristine(&out, "/other/path").unwrap();
         assert_eq!(
             again.parse::<DocumentMut>().unwrap()["game"]["pristine"].as_str(),
