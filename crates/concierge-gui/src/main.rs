@@ -317,6 +317,16 @@ struct AddForm {
     plugins: String,
 }
 
+/// How an action's outcome banner reads: green success, amber "you still
+/// have a manual step", or red failure. Keeps a partial/manual result from
+/// masquerading as a completed one (e.g. Download that only opened a web page).
+#[derive(Clone, Copy)]
+enum FlashKind {
+    Ok,
+    Warn,
+    Err,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 struct App {
     workspace: Option<PathBuf>,
@@ -331,6 +341,9 @@ struct App {
     error: Option<String>,
     /// A prominent green success banner from the last action (Apply/Check/…).
     notice: Option<String>,
+    /// An amber "action succeeded but a manual step remains" banner — e.g. a
+    /// Download that only opened the mod's web page and still needs a save.
+    warn: Option<String>,
     /// In-app Nexus API-key entry (Settings), so users don't edit config files.
     nexus_key_input: String,
     new_profile_name: String,
@@ -342,8 +355,8 @@ struct App {
     log_rx: Receiver<String>,
     log_tx: Sender<String>,
     /// Action outcome (ok?, message) surfaced as a banner, not just the log.
-    flash_rx: Receiver<(bool, String)>,
-    flash_tx: Sender<(bool, String)>,
+    flash_rx: Receiver<(FlashKind, String)>,
+    flash_tx: Sender<(FlashKind, String)>,
     busy: Arc<AtomicBool>,
     /// Set by an off-thread action that edited the manifest; the update loop
     /// reloads the plan (on the UI thread) when it sees this.
@@ -450,6 +463,7 @@ impl App {
             rel_issues: Vec::new(),
             error: None,
             notice: None,
+            warn: None,
             nexus_key_input: String::new(),
             new_profile_name: String::new(),
             search: String::new(),
@@ -1235,12 +1249,19 @@ impl App {
             let _ = tx.send(format!("> {name}"));
             match run_blocking(&repo, &plan, action, &tx) {
                 Ok(lines) => {
-                    let summary = lines
+                    // A "⏸ … still needed" line means the action did NOT finish the
+                    // job — e.g. Download only opened the mod's web page and a manual
+                    // save is still required. Surface that as amber, not a green
+                    // "finished", so the outcome can't masquerade as complete.
+                    let manual = lines
+                        .iter()
+                        .find(|l| l.contains('⏸') || l.contains("still needed"))
+                        .cloned();
+                    let placed = lines
                         .iter()
                         .rev()
                         .find(|l| l.contains("placed") || l.contains('✅'))
-                        .cloned()
-                        .unwrap_or_else(|| format!("{name} finished"));
+                        .cloned();
                     for l in lines {
                         let _ = tx.send(l);
                     }
@@ -1248,12 +1269,21 @@ impl App {
                         reload_pending.store(true, Ordering::SeqCst);
                     }
                     let _ = tx.send(format!("{name} done"));
-                    let _ = flash.send((true, summary));
+                    let (kind, summary) = manual.map_or_else(
+                        || {
+                            (
+                                FlashKind::Ok,
+                                placed.unwrap_or_else(|| format!("{name} finished")),
+                            )
+                        },
+                        |m| (FlashKind::Warn, m),
+                    );
+                    let _ = flash.send((kind, summary));
                 }
                 Err(e) => {
                     let msg = e.to_string();
                     let _ = tx.send(format!("{name}: {msg}"));
-                    let _ = flash.send((false, format!("{name} failed — {msg}")));
+                    let _ = flash.send((FlashKind::Err, format!("{name} failed — {msg}")));
                 }
             }
             busy.store(false, Ordering::SeqCst);
@@ -1897,13 +1927,14 @@ impl eframe::App for App {
         if self.sync_progress.lock().is_ok_and(|g| g.is_some()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
-        while let Ok((ok, msg)) = self.flash_rx.try_recv() {
-            if ok {
-                self.notice = Some(msg);
-                self.error = None;
-            } else {
-                self.error = Some(msg);
-                self.notice = None;
+        while let Ok((kind, msg)) = self.flash_rx.try_recv() {
+            self.error = None;
+            self.notice = None;
+            self.warn = None;
+            match kind {
+                FlashKind::Ok => self.notice = Some(msg),
+                FlashKind::Warn => self.warn = Some(msg),
+                FlashKind::Err => self.error = Some(msg),
             }
         }
         while let Ok(line) = self.log_rx.try_recv() {
@@ -2020,6 +2051,9 @@ impl eframe::App for App {
             }
             if let Some(n) = &self.notice {
                 ui.colored_label(egui::Color32::from_rgb(90, 200, 120), n);
+            }
+            if let Some(w) = &self.warn {
+                ui.colored_label(egui::Color32::from_rgb(220, 170, 90), w);
             }
             let Some(plan) = plan else {
                 if self.games.is_empty() {
