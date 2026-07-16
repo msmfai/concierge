@@ -518,11 +518,18 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         ),
         "remove the installed mods from the game (leaves your Setup intact)",
     ));
-    // the lock Toggle shows the current mode and is "selected" when Locked.
-    let lock_label = if f.mutable { "Edit" } else { "Locked" };
+    // the lock Toggle shows the current MODE (a state, not an action) and is
+    // "selected" when Locked. "Editing"/"Locked" reads as state; "Edit" alone
+    // looked like an edit *menu* (i3c6).
+    let lock_label = if f.mutable { "Editing" } else { "Locked" };
+    let lock_hover = if f.mutable {
+        "You can change this modpack. Click to lock it (make it read-only)."
+    } else {
+        "This modpack is read-only. Click to unlock and edit it."
+    };
     v.push(hv(
         toggle(Intent::ToggleLock, lock_label, !f.mutable),
-        "Locked mods can't be changed — switch to Edit to modify your setup",
+        lock_hover,
     ));
     let undo_guard = if !f.mutable {
         Some(LOCKED)
@@ -741,7 +748,7 @@ pub fn build_screen(f: &UiFacts) -> Screen {
     }
     status.push(format!(
         "mode: {} · tab: {}",
-        if f.mutable { "Edit" } else { "Locked" },
+        if f.mutable { "Editing" } else { "Locked" },
         f.tab.0.label()
     ));
 

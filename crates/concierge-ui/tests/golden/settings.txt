@@ -3,7 +3,7 @@
 +----------------------------------------------------------------+
 | workspace: /ws (2 games)                                       |
 | game: skyrimse · profile: modpack                              |
-| mode: Edit · tab: Setup                                        |
+| mode: Editing · tab: Setup                                     |
 +----------------------------------------------------------------+
 MODS:
    1. [x] skse64

@@ -3,7 +3,7 @@
 +----------------------------------------------------------------+
 | workspace: /ws (2 games)                                       |
 | game: skyrimse · profile: modpack                              |
-| mode: Edit · tab: Setup                                        |
+| mode: Editing · tab: Setup                                     |
 +----------------------------------------------------------------+
 MODS:
    1. [x] skse64
@@ -24,7 +24,7 @@ TRANSITIONS:
   conflicts        Conflicts                [enabled]
   play             Play                     [enabled]
   uninstall        Uninstall                [enabled]  -> ConfirmingUninstall
-  toggle_lock      Edit                     [enabled]
+  toggle_lock      Editing                  [enabled]
   undo             undo                     [guarded: nothing to undo]
   add_open         + add mod                [enabled]
   ai_interrupt     stop                     [enabled]
