@@ -41,6 +41,8 @@ pub struct GamePlan {
     pub kind: String,
     /// Nexus catalog domain, when the game lives on Nexus.
     pub nexus_domain: Option<String>,
+    /// Modrinth search domain, when the game's mods live on Modrinth (Minecraft).
+    pub modrinth_domain: Option<String>,
     pub runtime: Runtime,
     pub pristine: String,
     /// None = in-place mode: instance-relative roots resolve against pristine.
@@ -265,6 +267,7 @@ pub fn eval(manifest: &Manifest) -> Result<Plan> {
         game: GamePlan {
             kind: manifest.game.kind.clone(),
             nexus_domain: shape.nexus_domain,
+            modrinth_domain: shape.modrinth_domain,
             // The runtime is where the game actually *runs*: the instance's
             // bottle when instanced (it may live in a different, purpose-built
             // bottle than pristine), falling back to pristine otherwise.

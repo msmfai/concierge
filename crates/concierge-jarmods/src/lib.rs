@@ -22,7 +22,10 @@ pub mod adapter {
             "minecraft"
         }
         fn nexus_domain(&self) -> Option<&'static str> {
-            None // Modrinth/CurseForge; see concierge-db provider layer
+            None // mods live on Modrinth, not Nexus
+        }
+        fn modrinth_domain(&self) -> Option<&'static str> {
+            Some("minecraft")
         }
         fn install_roots(&self) -> &'static [(&'static str, RootTarget)] {
             &[

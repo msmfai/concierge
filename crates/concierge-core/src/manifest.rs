@@ -244,6 +244,8 @@ pub struct CustomGame {
     #[serde(default)]
     pub nexus_domain: Option<String>,
     #[serde(default)]
+    pub modrinth_domain: Option<String>,
+    #[serde(default)]
     pub launch: Vec<String>,
     #[serde(default)]
     pub steam_app_id: Option<u32>,
