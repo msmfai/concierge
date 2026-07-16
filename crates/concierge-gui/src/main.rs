@@ -1008,7 +1008,8 @@ impl App {
                             // add worked and saw the stale startup "(0 games)" log
                             // line (i2c1, i5c1, i4c1).
                             self.notice = Some(format!(
-                                "Added {kind} — {} game(s) in your workspace.",
+                                "Added {} — {} game(s) in your workspace.",
+                                concierge_games::display_name(kind),
                                 self.games.len()
                             ));
                             // Focus the newly added game.
@@ -2476,10 +2477,14 @@ impl App {
                 ui.separator();
                 let mut gsel = game_idx;
                 egui::ComboBox::from_label("game")
-                    .selected_text(games.get(gsel).map_or("-", String::as_str))
+                    .selected_text(
+                        games
+                            .get(gsel)
+                            .map_or_else(|| "-".to_owned(), |g| concierge_games::display_name(g)),
+                    )
                     .show_ui(ui, |ui| {
                         for (i, g) in games.iter().enumerate() {
-                            ui.selectable_value(&mut gsel, i, g);
+                            ui.selectable_value(&mut gsel, i, concierge_games::display_name(g));
                         }
                     });
                 if gsel != game_idx {
@@ -2501,10 +2506,13 @@ impl App {
                         );
                         let needle = filter.to_lowercase();
                         for kind in concierge_games::kinds() {
-                            let shown =
-                                needle.is_empty() || kind.to_lowercase().contains(&needle);
+                            let name = concierge_games::display_name(kind);
+                            // match the friendly name OR the raw slug
+                            let shown = needle.is_empty()
+                                || name.to_lowercase().contains(&needle)
+                                || kind.to_lowercase().contains(&needle);
                             if shown && games.iter().all(|g| g != kind) {
-                                ui.selectable_value(&mut to_add, Some(kind.to_owned()), kind);
+                                ui.selectable_value(&mut to_add, Some(kind.to_owned()), name);
                             }
                         }
                     });
