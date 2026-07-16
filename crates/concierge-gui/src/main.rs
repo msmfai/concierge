@@ -2287,6 +2287,19 @@ impl eframe::App for App {
                     }
                     ui.label("WHAT — the mods in this pack (identity + source):");
                     self.mod_list(ui, &mods);
+                    // Surface the download reality by the buttons, not buried in
+                    // the bottom log (T3.7: 14/30 only found it there).
+                    if !mods.is_empty() {
+                        ui.small(
+                            "Downloads: free Nexus accounts click \"Mod Manager Download\" \
+                             per mod (or drop files into ~/Downloads, then Download again); \
+                             Premium downloads automatically. Add a key in Settings.",
+                        )
+                        .on_hover_text(
+                            "The Download button fetches what it can and tells you what still \
+                             needs a click or a manual file.",
+                        );
+                    }
                     // RELATIONAL — cross-mod concerns, kept distinct from the mods.
                     if bethesda && !order.is_empty() {
                         ui.separator();
