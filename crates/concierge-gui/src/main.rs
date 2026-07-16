@@ -2477,25 +2477,39 @@ impl eframe::App for App {
                         .as_ref()
                         .and_then(|m| m.compat.script_extender.clone())
                     {
+                        // The tool's NAME and HOME come from the active game's
+                        // adapter — the crate that promotes it — so the UI never
+                        // hardcodes which extender (SKSE/F4SE/…) or where to get it.
+                        let tool = self
+                            .plan
+                            .as_ref()
+                            .and_then(|p| concierge::game::adapter_for(&p.game.kind).ok())
+                            .and_then(|a| a.promoted_tools().into_iter().next());
+                        let name = tool.map_or("a script extender", |t| t.name);
                         ui.colored_label(
                             egui::Color32::from_rgb(220, 170, 90),
                             format!(
-                                "\u{2699} This pack needs a script extender (SKSE/F4SE) \u{2265} {se}. \
-                                 Get the archive from silverlock.org, then add it below — Concierge \
-                                 installs it to your game folder and launches the game through it."
+                                "\u{2699} This pack needs {name} \u{2265} {se} — add the archive below \
+                                 and Concierge installs it to your game folder and launches the game \
+                                 through it."
                             ),
                         );
-                        if ui
-                            .button("\u{2795} Add script extender\u{2026}")
-                            .on_hover_text(
-                                "Opens the add-a-mod form. Paste the SKSE/F4SE download URL; \
-                                 Concierge detects the loader in the archive and installs it to \
-                                 the game root automatically (no need to set install_root).",
-                            )
-                            .clicked()
-                        {
-                            self.add.open = true;
-                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(format!("\u{2795} Add {name}\u{2026}"))
+                                .on_hover_text(
+                                    "Opens the add-a-mod form. Paste the download URL; Concierge \
+                                     detects the loader in the archive and installs it to the game \
+                                     root automatically (no need to set install_root).",
+                                )
+                                .clicked()
+                            {
+                                self.add.open = true;
+                            }
+                            if let Some(t) = tool {
+                                ui.hyperlink_to(format!("get {name}"), t.home);
+                            }
+                        });
                     }
                     // RELATIONAL — cross-mod concerns, kept distinct from the mods.
                     if bethesda && !order.is_empty() {

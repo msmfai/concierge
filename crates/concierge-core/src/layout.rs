@@ -71,31 +71,15 @@ fn is_data_subdir(name: &str) -> bool {
     DATA_SUBDIRS.contains(&name.to_ascii_lowercase().as_str())
 }
 
-/// The script-extender loader executables, one per Bethesda title. Their
-/// presence at an archive's top level is the tell that the archive IS a script
-/// extender (SKSE/F4SE/…) — which installs to the GAME root, not `Data/`, so the
-/// loader lands beside the game exe and launch can run the game through it.
-const SE_LOADERS: &[&str] = &[
-    "skse_loader.exe",
-    "skse64_loader.exe",
-    "f4se_loader.exe",
-    "obse_loader.exe",
-    "obse64_loader.exe",
-    "nvse_loader.exe",
-    "fose_loader.exe",
-    "sfse_loader.exe",
-];
-
-/// True when the extracted archive at `build_root` is a Bethesda script
-/// extender — a `*se*_loader.exe` sits at the top level. Such an archive must
-/// install to the game root (`install_root = "game"`), not `Data/`.
+/// The top-level FILE names of an extracted archive (dirs excluded), or empty
+/// if unreadable. A generic peek — core stays ignorant of what any file means;
+/// a game adapter interprets these (e.g. to recognise a promoted tool by its
+/// loader exe at the root).
 #[must_use]
-pub fn is_script_extender(build_root: &Path) -> bool {
-    top_level(build_root).is_some_and(|(_, files)| {
-        files
-            .iter()
-            .any(|f| SE_LOADERS.contains(&f.to_ascii_lowercase().as_str()))
-    })
+pub fn top_level_files(build_root: &Path) -> Vec<String> {
+    top_level(build_root)
+        .map(|(_, files)| files)
+        .unwrap_or_default()
 }
 
 #[must_use]
@@ -240,25 +224,20 @@ mod tests {
     }
 
     #[test]
-    fn script_extender_archive_is_detected_by_its_loader() {
-        // An SKSE archive: loader exe + src/ + Data/ at the root. It must be
-        // recognised so it installs to the game root, not Data/.
-        let root = std::env::temp_dir().join(format!("cg-layout-se-{}", std::process::id()));
+    fn top_level_files_lists_root_files_not_dirs() {
+        // The generic peek an adapter uses to recognise a promoted tool by its
+        // loader exe at the root — core itself stays ignorant of what it means.
+        let root = std::env::temp_dir().join(format!("cg-layout-tlf-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         touch(&root.join("skse64_loader.exe"));
         touch(&root.join("skse64_1_5_97.dll"));
         touch(&root.join("Data").join("Scripts").join("Actor.pex"));
-        assert!(is_script_extender(&root));
+        let mut files = top_level_files(&root);
+        files.sort();
+        assert_eq!(files, vec!["skse64_1_5_97.dll", "skse64_loader.exe"]);
         // infer_layout must NOT strip it (loader + Data live at root together).
         assert_eq!(infer_layout(&root).subdir, None);
         let _ = std::fs::remove_dir_all(&root);
-
-        // A plain mod (no loader exe) is not a script extender.
-        let plain = std::env::temp_dir().join(format!("cg-layout-plain-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&plain);
-        touch(&plain.join("Mod.esp"));
-        assert!(!is_script_extender(&plain));
-        let _ = std::fs::remove_dir_all(&plain);
     }
 
     #[test]

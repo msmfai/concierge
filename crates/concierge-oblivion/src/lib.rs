@@ -14,6 +14,12 @@ pub static ADAPTER: Bethesda = Bethesda {
     steam_app: 22_330_u32,
     base_masters: &["Oblivion.esm", "DLCShiveringIsles.esp"],
     plugin_prefix: "",
+    script_extender: Some(concierge_pluginorder::adapter::ScriptExtender {
+        id: "obse",
+        name: "OBSE",
+        loader: "obse_loader.exe",
+        home: "https://obse.silverlock.org/",
+    }),
 };
 
 /// Resolve this leaf's game `kind` to its adapter.

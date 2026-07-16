@@ -19,6 +19,12 @@ pub static ADAPTER: Bethesda = Bethesda {
         "BlueprintShips-Starfield.esm",
     ],
     plugin_prefix: "*",
+    script_extender: Some(concierge_pluginorder::adapter::ScriptExtender {
+        id: "sfse",
+        name: "SFSE",
+        loader: "sfse_loader.exe",
+        home: "https://github.com/ianpatt/sfse/releases",
+    }),
 };
 
 /// Resolve this leaf's game `kind` to its adapter.

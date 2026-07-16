@@ -8,15 +8,35 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use concierge::error::{Error, Result};
-use concierge::game::{GameAdapter, Lexicon, RootTarget, BETHESDA_LEXICON};
+use concierge::game::{GameAdapter, Lexicon, PromotedTool, RootTarget, BETHESDA_LEXICON};
 use concierge::manifest::Manifest;
 use concierge::plan::{ConfigFile, GENERATED_BANNER};
+
+/// The script extender a Bethesda title **promotes** — the xSE loader that must
+/// sit at the game root and that launch runs the game through. Owned by this
+/// family crate; core knows nothing of it (it sees only a generic
+/// [`PromotedTool`]). A leaf crate declares its own.
+#[derive(Debug, Clone, Copy)]
+pub struct ScriptExtender {
+    /// Short id and log namespace, e.g. `"f4se"` (the loader prefix, and the
+    /// `<my_games>/<ID>/<ID>.log` folder the runtime writes).
+    pub id: &'static str,
+    /// Display name, e.g. `"F4SE"`.
+    pub name: &'static str,
+    /// The loader exe that identifies the archive and must land at the game root.
+    pub loader: &'static str,
+    /// Where to get it (its canonical home).
+    pub home: &'static str,
+}
 
 /// Shared shape for Creation/Gamebryo-engine games. A leaf crate specializes it
 /// entirely through data — no code — which is why one family serves Skyrim
 /// SE/LE/VR, Fallout 3/NV/4/76, Oblivion, Starfield, and Morrowind.
 #[derive(Debug)]
 pub struct Bethesda {
+    /// The script extender this title promotes, if any (`None` = a title with no
+    /// xSE). Optional to use — the player still chooses whether to install it.
+    pub script_extender: Option<ScriptExtender>,
     pub kind_name: &'static str,
     pub domain: &'static str,
     pub custom_ini: &'static str,
@@ -120,6 +140,31 @@ impl GameAdapter for Bethesda {
     fn plugin_bases(&self) -> Option<&'static [&'static str]> {
         Some(self.base_masters)
     }
+    fn promoted_tools(&self) -> Vec<PromotedTool> {
+        // The Bethesda family promotes exactly one tool — its script extender —
+        // installed to the game root. Core sees only the generic card.
+        self.script_extender
+            .map(|se| PromotedTool {
+                id: se.id,
+                name: se.name,
+                blurb: "Script extender — many script-based mods need it; it installs to the \
+                        game folder and the game launches through it.",
+                home: se.home,
+                install_root: "game",
+            })
+            .into_iter()
+            .collect()
+    }
+    fn promoted_tool_for(&self, top_level: &[String]) -> Option<PromotedTool> {
+        // Recognise the extender by its loader exe sitting at the archive root —
+        // the family's own opinion; core stays ignorant.
+        let se = self.script_extender?;
+        top_level
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(se.loader))
+            .then(|| self.promoted_tools().into_iter().next())
+            .flatten()
+    }
     fn lints(&self, plan: &concierge::plan::Plan) -> Result<Vec<concierge::lint::Violation>> {
         // The Bethesda plugin invariants — missing masters, the 254 full-plugin
         // limit, and master-graph cycles — for EVERY plugin-order game, resolved
@@ -149,8 +194,9 @@ impl GameAdapter for Bethesda {
                     .to_owned(),
             );
         }
-        // Parse the script-extender log at <my_games>/<XSE>/<xse>.log.
-        let extender = self.launchers.first()?.strip_suffix("_loader.exe")?;
+        // Parse the script-extender log at <my_games>/<XSE>/<xse>.log — the
+        // extender the title declares, not a name sniffed from the launcher list.
+        let extender = self.script_extender.as_ref()?.id;
         if let Some(log) = find_log(my_games, &format!("{extender}.log")) {
             if let Ok(text) = std::fs::read_to_string(&log) {
                 for line in text.lines() {
@@ -206,6 +252,12 @@ mod tests {
         steam_app: 489_830,
         base_masters: &["Skyrim.esm", "Update.esm", "Dragonborn.esm"],
         plugin_prefix: "*",
+        script_extender: Some(super::ScriptExtender {
+            id: "skse64",
+            name: "SKSE64",
+            loader: "skse64_loader.exe",
+            home: "https://skse.silverlock.org/",
+        }),
     };
 
     fn manifest(dlc: &str) -> Manifest {
@@ -243,5 +295,21 @@ mod tests {
     fn lexicon_speaks_bethesda() {
         assert_eq!(TESTBED.lexicon().order, "load order");
         assert_eq!(TESTBED.lexicon().plugins, "plugins");
+    }
+
+    #[test]
+    fn promotes_its_script_extender_and_recognises_the_loader() {
+        // The family promotes exactly its declared extender, routed to game root.
+        let tools = TESTBED.promoted_tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "SKSE64");
+        assert_eq!(tools[0].install_root, "game");
+        // An archive with the loader at the root is recognised (case-insensitive);
+        // an ordinary mod is not.
+        let se = TESTBED.promoted_tool_for(&["SKSE64_Loader.exe".into(), "Data".into()]);
+        assert_eq!(se.map(|t| t.id), Some("skse64"));
+        assert!(TESTBED
+            .promoted_tool_for(&["SomeMod.esp".into(), "textures".into()])
+            .is_none());
     }
 }

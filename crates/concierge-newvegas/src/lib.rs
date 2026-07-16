@@ -25,6 +25,12 @@ pub static ADAPTER: Bethesda = Bethesda {
         "CaravanPack.esm",
     ],
     plugin_prefix: "",
+    script_extender: Some(concierge_pluginorder::adapter::ScriptExtender {
+        id: "nvse",
+        name: "NVSE",
+        loader: "nvse_loader.exe",
+        home: "https://github.com/xNVSE/NVSE/releases",
+    }),
 };
 
 /// Resolve this leaf's game `kind` to its adapter.
