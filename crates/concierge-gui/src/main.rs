@@ -354,6 +354,8 @@ struct App {
     /// Whether the `claude` CLI is on PATH — cached at startup (spawning a probe
     /// every frame is wasteful) and used to gate the AI features gracefully.
     agent_available: bool,
+    /// Type-to-filter text for the (long) "+ add game" dropdown.
+    add_game_filter: String,
     new_profile_name: String,
     search: String,
     selected: Option<String>,
@@ -477,6 +479,7 @@ impl App {
             nexus_key_input: String::new(),
             pristine_input: String::new(),
             agent_available: which_agent_available(),
+            add_game_filter: String::new(),
             new_profile_name: String::new(),
             search: String::new(),
             selected: None,
@@ -998,6 +1001,13 @@ impl App {
                     match profiles::create_game(ws, kind) {
                         Ok(_) => {
                             self.discover();
+                            // Clear positive feedback — testers weren't sure the
+                            // add worked and saw the stale startup "(0 games)" log
+                            // line (i2c1, i5c1, i4c1).
+                            self.notice = Some(format!(
+                                "Added {kind} — {} game(s) in your workspace.",
+                                self.games.len()
+                            ));
                             // Focus the newly added game.
                             if let Some(i) = self.games.iter().position(|g| g.game == kind) {
                                 self.game_idx = i;
@@ -2446,16 +2456,29 @@ impl App {
                 // Add a game to the workspace: pick a supported kind that isn't
                 // present yet; creating it makes the new-profile flow available.
                 let mut to_add: Option<String> = None;
+                // Local copy so the text field's &mut doesn't fight the outer
+                // borrow of self; written back after the dropdown closes.
+                let mut filter = std::mem::take(&mut self.add_game_filter);
                 egui::ComboBox::from_id_salt("add_game")
                     .selected_text("+ add game")
                     .show_ui(ui, |ui| {
+                        // Type-to-filter the ~45-game list (i5c1, i4c3).
+                        ui.add(
+                            egui::TextEdit::singleline(&mut filter)
+                                .hint_text("filter games…"),
+                        );
+                        let needle = filter.to_lowercase();
                         for kind in concierge_games::kinds() {
-                            if games.iter().all(|g| g != kind) {
+                            let shown =
+                                needle.is_empty() || kind.to_lowercase().contains(&needle);
+                            if shown && games.iter().all(|g| g != kind) {
                                 ui.selectable_value(&mut to_add, Some(kind.to_owned()), kind);
                             }
                         }
                     });
+                self.add_game_filter = filter;
                 if let Some(kind) = to_add {
+                    self.add_game_filter.clear();
                     self.dispatch_intent(&format!("add_game:{kind}"));
                 }
                 let mut psel = profile_idx;
@@ -3312,12 +3335,20 @@ impl App {
                     });
                     ui.separator();
                 }
-                ui.horizontal(|ui| {
-                    self.render_field(ui, "browse_query");
-                    if let Some(tr) = &search_tr {
-                        self.transition_button(ui, tr);
-                    }
-                });
+                let submitted = ui
+                    .horizontal(|ui| {
+                        let enter = self.render_field(ui, "browse_query");
+                        if let Some(tr) = &search_tr {
+                            self.transition_button(ui, tr);
+                        }
+                        enter
+                    })
+                    .inner;
+                // Enter in the search box runs the search — testers repeatedly
+                // hit Enter and nothing happened (i3c5, i4c4, i5c4).
+                if submitted {
+                    self.do_browse_search();
+                }
                 // First-class category filter + sort — the normal Nexus controls.
                 self.browse_filters(ui);
                 ui.horizontal(|ui| {
