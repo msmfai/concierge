@@ -71,9 +71,10 @@ original stays pristine — and nothing happens until you click Apply.
 
 ![A “Preview changes” dialog listing four mods to deploy and zero to remove, with the note “Nothing changes until you Apply.”](docs/tour/4-preview.png)
 
-**5 · Honest about what's left to do.** No fake “done”. When a step still needs a
-free key or a manual download, Concierge says so plainly instead of flashing
-success.
+**5 · It never fakes a finish.** If some mods still need downloading, Concierge
+says so and tells you exactly how to get them — one click on the mod's page, or
+drop the file into your Downloads folder — instead of flashing a green “done”
+over an install that isn't actually ready.
 
 ![The pack view with an amber banner reading “4 still needed — click ‘Mod Manager Download’ on each (one click each, free), or save to ~/Downloads, then re-run.”](docs/tour/5-honest.png)
 
