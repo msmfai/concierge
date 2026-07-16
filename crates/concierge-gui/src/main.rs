@@ -271,6 +271,8 @@ enum Edit {
     Add(NewMod),
     /// Point the profile at the game's install folder (`[game].pristine`).
     SetPristine(String),
+    /// Set `[compat]` game version + loader (for Modrinth/Minecraft resolves).
+    SetCompat(String, String),
 }
 
 /// A destructive action awaiting confirmation (Nielsen #5 / NN/g). The guard is
@@ -351,6 +353,10 @@ struct App {
     /// In-app game-install-path entry (Settings) — writes `[game].pristine` so a
     /// fresh profile stops being "not realized" and can deploy.
     pristine_input: String,
+    /// Minecraft pack's target version + loader (Settings) — `[compat]`, used to
+    /// resolve the right Modrinth build.
+    mc_version_input: String,
+    mc_loader_input: String,
     /// Whether the `claude` CLI is on PATH — cached at startup (spawning a probe
     /// every frame is wasteful) and used to gate the AI features gracefully.
     agent_available: bool,
@@ -480,6 +486,8 @@ impl App {
             warn: None,
             nexus_key_input: String::new(),
             pristine_input: String::new(),
+            mc_version_input: String::new(),
+            mc_loader_input: String::new(),
             agent_available: which_agent_available(),
             add_game_filter: String::new(),
             new_profile_name: String::new(),
@@ -635,7 +643,7 @@ impl App {
             has_catalog: self
                 .plan
                 .as_ref()
-                .is_some_and(|p| p.game.nexus_domain.is_some()),
+                .is_some_and(|p| p.game.nexus_domain.is_some() || p.game.modrinth_domain.is_some()),
             tab: concierge_ui::TabFacts(tab),
             mutable: self.mutable,
             has_undo: !self.undo.is_empty(),
@@ -1212,6 +1220,9 @@ impl App {
             Edit::Remove(name) => manifest_edit::remove_mod(&text, &name),
             Edit::Add(m) => manifest_edit::add_mod(&text, &m),
             Edit::SetPristine(p) => manifest_edit::set_pristine(&text, p.trim()),
+            Edit::SetCompat(gv, loader) => {
+                manifest_edit::set_compat(&text, gv.trim(), loader.trim())
+            }
         };
         match edited {
             Ok(new_text) => match concierge::manifest_edit::write_manifest(&path, &new_text) {
@@ -1453,6 +1464,25 @@ fn nexus_new_mod(
             file_id: u32::try_from(file_id).unwrap_or(0),
         },
         md5,
+        file,
+        install_root: "data".to_owned(),
+        plugins: Vec::new(),
+    }
+}
+
+/// A URL-source mod (e.g. a resolved Modrinth CDN file). Unpinned — the url
+/// download computes + pins the md5 on first fetch. `install_root` "data" is
+/// omitted, so the game's default root applies (e.g. `mods/` for Minecraft).
+fn url_new_mod(name: String, url: String, file: String, version: String) -> NewMod {
+    NewMod {
+        name,
+        version: if version.is_empty() {
+            "1".to_owned()
+        } else {
+            version
+        },
+        source: NewSource::Url(url),
+        md5: String::new(),
         file,
         install_root: "data".to_owned(),
         plugins: Vec::new(),
@@ -3330,6 +3360,76 @@ impl App {
                         });
                     }
                 }
+                // Minecraft (Modrinth): the version + loader decide which build
+                // "Add" resolves. Only shown for Modrinth-backed games.
+                if self.catalog_target().is_some_and(|(m, _)| m) {
+                    let (cur_gv, cur_loader) = self.manifest.as_ref().map_or_else(
+                        || (String::new(), String::new()),
+                        |m| {
+                            (
+                                m.compat.game_version.clone().unwrap_or_default(),
+                                m.compat.loader.clone().unwrap_or_default(),
+                            )
+                        },
+                    );
+                    ui.separator();
+                    ui.strong("Minecraft version + loader");
+                    ui.small(
+                        "Which build to install — \"Add\" resolves the newest Modrinth version \
+                         matching these.",
+                    );
+                    if cur_gv.is_empty() && cur_loader.is_empty() {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 170, 90),
+                            "not set — Add may pick the wrong loader/version until you set these.",
+                        );
+                    } else {
+                        ui.weak(format!(
+                            "current: {} / {}",
+                            if cur_gv.is_empty() { "(any)" } else { &cur_gv },
+                            if cur_loader.is_empty() { "(any)" } else { &cur_loader }
+                        ));
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("version");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.mc_version_input)
+                                .hint_text("e.g. 1.20.1")
+                                .desired_width(90.0),
+                        );
+                        ui.label("loader");
+                        egui::ComboBox::from_id_salt("mc_loader")
+                            .selected_text(if self.mc_loader_input.is_empty() {
+                                "choose"
+                            } else {
+                                &self.mc_loader_input
+                            })
+                            .show_ui(ui, |ui| {
+                                for l in ["fabric", "forge", "quilt", "neoforge"] {
+                                    ui.selectable_value(
+                                        &mut self.mc_loader_input,
+                                        l.to_owned(),
+                                        l,
+                                    );
+                                }
+                            });
+                        if ui.button("Save").clicked() {
+                            // empty field = keep the current value (don't clear).
+                            let gv = if self.mc_version_input.trim().is_empty() {
+                                cur_gv.clone()
+                            } else {
+                                self.mc_version_input.trim().to_owned()
+                            };
+                            let loader = if self.mc_loader_input.trim().is_empty() {
+                                cur_loader.clone()
+                            } else {
+                                self.mc_loader_input.trim().to_owned()
+                            };
+                            self.apply(Edit::SetCompat(gv, loader));
+                            self.notice = Some("Minecraft version + loader saved.".to_owned());
+                        }
+                    });
+                }
                 ui.separator();
                 ui.strong("preferences");
                 ui.checkbox(&mut self.dark, "dark theme");
@@ -3403,13 +3503,12 @@ impl App {
             .collect();
         // The status line reads a CACHED (rows, synced) — the worker refreshes
         // it; the window never touches the catalog during a repaint.
-        let status = self
-            .plan
-            .as_ref()
-            .and_then(|p| p.game.nexus_domain.clone())
-            .map(|d| (d, self.browse_status));
+        let target = self.catalog_target();
+        let is_modrinth = target.as_ref().is_some_and(|(m, _)| *m);
+        let provider = if is_modrinth { "Modrinth" } else { "Nexus" };
+        let status = target.map(|(_, d)| (d, self.browse_status));
         let syncing = self.sync_progress.lock().ok().and_then(|g| g.clone());
-        egui::Window::new("Browse mods (Nexus catalog)")
+        egui::Window::new(format!("Browse mods ({provider} catalog)"))
             .open(&mut open)
             .default_width(560.0)
             .default_height(560.0)
@@ -3446,10 +3545,12 @@ impl App {
                         }
                         if ui
                             .button("⟳ Sync now")
-                            .on_hover_text("download the public Nexus mod list for this game")
+                            .on_hover_text(format!(
+                                "download the public {provider} mod list for this game"
+                            ))
                             .clicked()
                         {
-                            self.sync_catalog(d.clone());
+                            self.sync_catalog(d.clone(), is_modrinth);
                         }
                     });
                     ui.separator();
@@ -3768,14 +3869,41 @@ impl App {
         let Some(repo) = self.active_repo() else {
             return;
         };
-        let domain = self
-            .plan
-            .as_ref()
-            .and_then(|p| p.game.nexus_domain.clone())
-            .unwrap_or_default();
+        let Some((is_modrinth, domain)) = self.catalog_target() else {
+            return;
+        };
         let name = name.to_owned();
         let (tx, reload) = (self.log_tx.clone(), Arc::clone(&self.reload_pending));
         let _ = tx.send(format!("adding {name}…"));
+        if is_modrinth {
+            // Resolve the project (slug lives in the catalog's version column)
+            // to a free Modrinth CDN file, filtered by the pack's game version +
+            // loader; add it as a Url mod so `download` fetches it free.
+            let (gv, loader) = self.manifest.as_ref().map_or((None, None), |m| {
+                (m.compat.game_version.clone(), m.compat.loader.clone())
+            });
+            std::thread::spawn(move || {
+                let slug = concierge_db::catalog::Catalog::open(&repo.catalog_path())
+                    .ok()
+                    .and_then(|c| c.version_of(&domain, mod_id).ok().flatten())
+                    .unwrap_or_default();
+                if slug.is_empty() {
+                    let _ = tx.send(format!("add {name}: no Modrinth id cached — re-sync"));
+                    return;
+                }
+                match concierge_db::modrinth::resolve(&slug, gv.as_deref(), loader.as_deref()) {
+                    Ok(r) => {
+                        let entry = url_new_mod(name.clone(), r.url, r.filename, r.version_number);
+                        write_added_mod(&repo, &entry, &tx, &reload);
+                        record_audit_ok(&repo, mod_id, &name);
+                    }
+                    Err(e) => {
+                        let _ = tx.send(format!("add {name}: {e}"));
+                    }
+                }
+            });
+            return;
+        }
         std::thread::spawn(move || {
             // Resolve the main file: id + filename + the actual version.
             let (file_id, file, version) = concierge::nexus::api_key()
@@ -3812,7 +3940,17 @@ impl App {
     }
 
     /// Sync the catalog for `domain` off-thread (the browser's "Sync now").
-    fn sync_catalog(&self, domain: String) {
+    /// The active catalog provider for the current game: `(is_modrinth, domain)`.
+    /// Prefers Modrinth (Minecraft) then Nexus; `None` if the game has neither.
+    fn catalog_target(&self) -> Option<(bool, String)> {
+        let g = &self.plan.as_ref()?.game;
+        g.modrinth_domain.clone().map_or_else(
+            || g.nexus_domain.clone().map(|d| (false, d)),
+            |d| Some((true, d)),
+        )
+    }
+
+    fn sync_catalog(&self, domain: String, modrinth: bool) {
         if self.busy.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -3844,20 +3982,26 @@ impl App {
             match concierge_db::catalog::Catalog::open(&repo.catalog_path()) {
                 Ok(mut cat) => {
                     let mut pages = 0u32;
-                    match concierge_db::sync::sync_game(&mut cat, &domain, &mut |l| {
+                    // Stream what's downloaded so far into an open browser (WAL
+                    // lets the search read mid-sync) — no waiting for the whole
+                    // catalog before you can look at anything.
+                    let mut on_line = |l: &str| {
                         let _ = tx.send(l.to_owned());
                         set_prog(
                             &prog,
                             Some(format!("Downloading the mod list… {}", l.trim())),
                         );
-                        // Stream what's downloaded so far into an open browser
-                        // (WAL lets the search read mid-sync) — no more waiting
-                        // for the whole catalog before you can look at anything.
                         pages = pages.wrapping_add(1);
                         if pages.is_multiple_of(15) {
                             refresh.store(true, Ordering::SeqCst);
                         }
-                    }) {
+                    };
+                    let result = if modrinth {
+                        concierge_db::sync::sync_modrinth(&mut cat, &domain, &mut on_line)
+                    } else {
+                        concierge_db::sync::sync_game(&mut cat, &domain, &mut on_line)
+                    };
+                    match result {
                         Ok(r) => {
                             let _ = tx.send(format!("catalog synced: {} rows", r.rows_synced));
                             refresh.store(true, Ordering::SeqCst); // final re-search
@@ -3941,16 +4085,11 @@ impl App {
         let Some(repo) = self.active_repo() else {
             return;
         };
-        let domain = self
-            .plan
-            .as_ref()
-            .and_then(|p| p.game.nexus_domain.clone())
-            .unwrap_or_default();
-        if domain.is_empty() {
+        let Some((_, domain)) = self.catalog_target() else {
             self.browse_hits.clear();
-            "this game has no Nexus catalog domain".clone_into(&mut self.browse_msg);
+            "this game has no mod catalog (Nexus or Modrinth)".clone_into(&mut self.browse_msg);
             return;
-        }
+        };
         self.browse_seq += 1;
         self.browse_busy = true;
         let seq = self.browse_seq;
