@@ -1770,6 +1770,24 @@ fn run_blocking(
 }
 
 fn reconcile_and_deploy(repo: &Repo, plan: &Plan) -> concierge::Result<Vec<String>> {
+    // Merge conflicts reconciles a plugin load order in the deployed game — it
+    // only makes sense for plugin-based games with a set-up install. Without
+    // these guards a fresh/non-plugin profile crashed with a raw filesystem
+    // error (i1c6). Name the precondition instead.
+    if !is_bethesda(&plan.game.kind) {
+        return Err(concierge::Error::Other(format!(
+            "Merge conflicts only applies to plugin-based games (Skyrim, Fallout 4) — \
+             {} doesn't use a plugin load order.",
+            plan.game.kind
+        )));
+    }
+    if plan.game.pristine.trim().is_empty() {
+        return Err(concierge::Error::Other(
+            "Set the game install folder in Settings, then Download + Apply your mods \
+             first — Merge conflicts works on an installed plugin load order."
+                .into(),
+        ));
+    }
     concierge::saves::backup(repo, plan)?;
     concierge::store::fetch_all(repo, plan)?;
     concierge::build::build_all(repo, plan)?;
