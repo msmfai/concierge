@@ -285,6 +285,20 @@ pub fn swap_game_block(shared: &str, local: &str) -> Result<String> {
     Ok(out.to_string())
 }
 
+/// Set the game's `pristine` install path — the folder Concierge installs a
+/// *copy* of, and the one thing a fresh profile is missing before it can deploy
+/// ("not realized" until this points at a real install). An empty `path` clears
+/// it. Format-preserving, like every edit here.
+pub fn set_pristine(doc: &str, path: &str) -> Result<String> {
+    let mut d = parse(doc)?;
+    let game = d
+        .get_mut("game")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| Error::Manifest("manifest has no [game] block".to_owned()))?;
+    game.insert("pristine", value(path));
+    Ok(d.to_string())
+}
+
 /// Remove a mod by name (from the manifest; store/instance cleanup is realize's).
 pub fn remove_mod(doc: &str, name: &str) -> Result<String> {
     let mut d = parse(doc)?;
@@ -389,6 +403,26 @@ version = \"3\"
             .iter()
             .filter_map(|t| table_name(t).map(str::to_owned))
             .collect()
+    }
+
+    #[test]
+    fn set_pristine_writes_game_path_and_preserves_the_rest() {
+        let out = set_pristine(DOC, "/home/me/games/Fallout 4").unwrap();
+        // pristine landed in [game], parseable back
+        let d = out.parse::<DocumentMut>().unwrap();
+        assert_eq!(
+            d["game"]["pristine"].as_str(),
+            Some("/home/me/games/Fallout 4")
+        );
+        assert_eq!(d["game"]["kind"].as_str(), Some("fallout4")); // untouched
+        assert!(out.contains("# keep this comment")); // comments survive
+        assert_eq!(names(&out), vec!["aaa", "bbb", "ccc"]); // mods untouched
+        // re-setting overwrites rather than duplicating
+        let again = set_pristine(&out, "/other/path").unwrap();
+        assert_eq!(
+            again.parse::<DocumentMut>().unwrap()["game"]["pristine"].as_str(),
+            Some("/other/path")
+        );
     }
 
     #[test]
