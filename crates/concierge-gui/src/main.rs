@@ -3193,6 +3193,27 @@ impl App {
                         }
                     }
                 });
+                ui.add_space(4.0);
+                ui.label(
+                    "No Premium? Enable 1-click downloads: register Concierge as the handler \
+                     for Nexus's \"Mod Manager Download\" button, then one click per mod on \
+                     its Nexus page sends the file straight here — free, verified, no browser \
+                     round-trip. (The same handoff MO2/Vortex/Wabbajack use; nothing is ever \
+                     downloaded without your click.)",
+                );
+                if ui
+                    .button("Enable 1-click downloads")
+                    .on_hover_text("register the nxm:// protocol handler for this user")
+                    .clicked()
+                {
+                    match std::env::current_exe() {
+                        Ok(exe) => match concierge_platform::register_nxm_handler(&exe) {
+                            Ok(msg) => self.notice = Some(msg),
+                            Err(e) => self.error = Some(e),
+                        },
+                        Err(e) => self.error = Some(format!("couldn't find the app path: {e}")),
+                    }
+                }
                 ui.separator();
                 ui.strong("Game install folder");
                 // Owned snapshot so the manifest borrow is released before the
