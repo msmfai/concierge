@@ -14,6 +14,8 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Other(String),
 }
 
 impl From<ureq::Error> for Error {
