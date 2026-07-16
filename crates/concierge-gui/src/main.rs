@@ -1085,7 +1085,14 @@ impl App {
 
     /// Render a per-row button (dynamic id) via the projection primitive — for
     /// grid cells whose enabled state is position-dependent (mod ↑/↓/remove).
-    fn row_btn(&mut self, ui: &mut eframe::egui::Ui, id: &str, label: &str, enabled: bool) {
+    fn row_btn(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        id: &str,
+        label: &str,
+        hover: &str,
+        enabled: bool,
+    ) {
         let tr = concierge_ui::Transition {
             id: id.to_owned(),
             label: label.to_owned(),
@@ -1093,7 +1100,9 @@ impl App {
             selected: false,
             enabled,
             guard: None,
-            hover: None,
+            // Icon-only controls need a name on hover — the glyphs even render as
+            // empty squares in some fonts (i3c5, i4c5).
+            hover: Some(hover.to_owned()),
             target: None,
         };
         self.transition_button(ui, &tr);
@@ -2904,15 +2913,23 @@ impl App {
                                     ui,
                                     &format!("mod_up:{}", m.name),
                                     "↑",
+                                    "move up in load order",
                                     can_reorder && i > 0,
                                 );
                                 self.row_btn(
                                     ui,
                                     &format!("mod_down:{}", m.name),
                                     "↓",
+                                    "move down in load order",
                                     can_reorder && i + 1 < n,
                                 );
-                                self.row_btn(ui, &format!("mod_remove:{}", m.name), "🗑", mutable);
+                                self.row_btn(
+                                    ui,
+                                    &format!("mod_remove:{}", m.name),
+                                    "🗑",
+                                    "remove this mod from the pack",
+                                    mutable,
+                                );
                             });
                             ui.end_row();
                         }
