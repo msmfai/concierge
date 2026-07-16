@@ -1633,7 +1633,20 @@ fn run_blocking(
             }
         }
         Action::Launch => {
-            let info = concierge::launch::launch(plan)?;
+            // Translate the CLI-flavoured NoInstance ("run `concierge realize`")
+            // into the GUI's own verb: Apply. i4c2 hit "Play fails by telling me
+            // to run a CLI command".
+            let info = concierge::launch::launch(plan).map_err(|e| {
+                if matches!(e, concierge::Error::NoInstance) {
+                    concierge::Error::Other(
+                        "Nothing is installed yet — click Apply to install your setup into \
+                         the game, then Play."
+                            .to_owned(),
+                    )
+                } else {
+                    e
+                }
+            })?;
             Ok(vec![format!("launched {} ({:?})", info.exe, info.runtime)])
         }
         Action::Undeploy => {
