@@ -383,6 +383,8 @@ struct App {
     settings_open: bool,
     diff_open: bool,
     browse_open: bool,
+    /// The Wabbajack-style guided download queue window.
+    download_session_open: bool,
     browse_query: String,
     nxm_input: String,
     nexus_account: Arc<std::sync::Mutex<String>>,
@@ -502,6 +504,7 @@ impl App {
             settings_open: false,
             diff_open: false,
             browse_open: false,
+            download_session_open: false,
             browse_query: String::new(),
             nxm_input: String::new(),
             nexus_account: Arc::new(std::sync::Mutex::new(String::new())),
@@ -2299,15 +2302,21 @@ impl eframe::App for App {
                     // Surface the download reality by the buttons, not buried in
                     // the bottom log (T3.7: 14/30 only found it there).
                     if !mods.is_empty() {
-                        ui.small(
-                            "Downloads: free Nexus accounts click \"Mod Manager Download\" \
-                             per mod (or drop files into ~/Downloads, then Download again); \
-                             Premium downloads automatically. Add a key in Settings.",
-                        )
-                        .on_hover_text(
-                            "The Download button fetches what it can and tells you what still \
-                             needs a click or a manual file.",
-                        );
+                        ui.horizontal(|ui| {
+                            ui.small(
+                                "Downloads: Premium fetches automatically; free accounts click \
+                                 \"Mod Manager Download\" per mod.",
+                            );
+                            if ui
+                                .small_button("Download session…")
+                                .on_hover_text(
+                                    "a guided queue of the mods still to download (Wabbajack-style)",
+                                )
+                                .clicked()
+                            {
+                                self.download_session_open = true;
+                            }
+                        });
                     }
                     // RELATIONAL — cross-mod concerns, kept distinct from the mods.
                     if bethesda && !order.is_empty() {
@@ -2426,6 +2435,7 @@ impl eframe::App for App {
         self.settings_panel(ctx);
         self.diff_window(ctx);
         self.browse_window(ctx);
+        self.download_window(ctx);
         self.confirm_modal(ctx);
 
         if let Some(edit) = self.edit.take() {
@@ -3450,6 +3460,103 @@ impl App {
 
     /// The category filter + sort controls — first-class, above the results.
     /// Changing either re-runs the search immediately.
+    /// The guided "download session" — the Wabbajack pattern for free accounts:
+    /// list the mods still missing their archive, open each one's Nexus file page
+    /// on request, and let the nxm:// handoff drop them off the list as they land
+    /// and hash-verify. One click per mod, free, no automation.
+    fn download_window(&mut self, ctx: &eframe::egui::Context) {
+        use eframe::egui;
+        if !self.download_session_open {
+            return;
+        }
+        let mut open = true;
+        let repo = self.active_repo();
+        let domain = self
+            .plan
+            .as_ref()
+            .and_then(|p| p.game.nexus_domain.clone());
+        let mods = self.plan.as_ref().map_or_else(Vec::new, |p| p.mods.clone());
+        let total = mods.len();
+        let needed: Vec<&concierge::plan::PlannedMod> = mods
+            .iter()
+            .filter(|m| {
+                let present = repo.as_ref().is_some_and(|r| {
+                    m.md5
+                        .as_deref()
+                        .is_some_and(|h| !h.is_empty() && r.store_path(h, &m.file).exists())
+                });
+                !present
+            })
+            .collect();
+        let have = total - needed.len();
+        let pct = have.saturating_mul(100).checked_div(total).unwrap_or(0);
+        let frac = f32::from(u16::try_from(pct.min(100)).unwrap_or(0)) / 100.0;
+        egui::Window::new("Download session")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(480.0)
+            .show(ctx, |ui| {
+                ui.add(
+                    egui::ProgressBar::new(frac)
+                        .text(format!("{have} of {total} mods downloaded")),
+                );
+                ui.small(
+                    "Free account? Turn on \"Enable 1-click downloads\" in Settings first. \
+                     Then click \"Mod Manager Download\" on each page below — the file lands \
+                     here, is checksum-verified, and drops off this list.",
+                );
+                ui.separator();
+                if needed.is_empty() {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(120, 190, 120),
+                        "\u{2713} Every mod is downloaded — you can Apply.",
+                    );
+                    return;
+                }
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    for m in &needed {
+                        ui.horizontal(|ui| {
+                            ui.label(&m.name);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| match (&m.source, domain.as_deref()) {
+                                    (
+                                        concierge::plan::Source::Nexus { mod_id, file_id },
+                                        Some(d),
+                                    ) => {
+                                        if ui
+                                            .button("Open Nexus page")
+                                            .on_hover_text(
+                                                "click \"Mod Manager Download\" there",
+                                            )
+                                            .clicked()
+                                        {
+                                            let _ = concierge_platform::open_url(
+                                                &concierge::nexus::file_page_url(
+                                                    d, *mod_id, *file_id,
+                                                ),
+                                            );
+                                        }
+                                    }
+                                    (concierge::plan::Source::Url { .. }, _) => {
+                                        ui.weak("direct URL — use Download");
+                                    }
+                                    _ => {
+                                        ui.weak("downloads via Download");
+                                    }
+                                },
+                            );
+                        });
+                    }
+                });
+            });
+        // While a download is in flight, keep repainting so items drop off live.
+        if self.busy.load(Ordering::SeqCst) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(400));
+        }
+        self.download_session_open = open;
+    }
+
     fn browse_filters(&mut self, ui: &mut eframe::egui::Ui) {
         use concierge_ai::tools::SortBy;
         use eframe::egui;
