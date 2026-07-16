@@ -351,6 +351,9 @@ struct App {
     /// In-app game-install-path entry (Settings) — writes `[game].pristine` so a
     /// fresh profile stops being "not realized" and can deploy.
     pristine_input: String,
+    /// Whether the `claude` CLI is on PATH — cached at startup (spawning a probe
+    /// every frame is wasteful) and used to gate the AI features gracefully.
+    agent_available: bool,
     new_profile_name: String,
     search: String,
     selected: Option<String>,
@@ -473,6 +476,7 @@ impl App {
             warn: None,
             nexus_key_input: String::new(),
             pristine_input: String::new(),
+            agent_available: which_agent_available(),
             new_profile_name: String::new(),
             search: String::new(),
             selected: None,
@@ -2499,7 +2503,22 @@ impl App {
                     self.transition_button(ui, tr);
                 }
                 if let Some(tr) = &ai_tr {
-                    self.transition_button(ui, tr);
+                    if self.agent_available {
+                        self.transition_button(ui, tr);
+                    } else {
+                        // Graceful degradation: without the claude CLI, "new
+                        // modpack (AI)" used to make an empty pack + open a raw
+                        // shell (15/30 confused testers). Disable it with a clear
+                        // reason instead (the guard shows on disabled-hover).
+                        let mut off = tr.clone();
+                        off.enabled = false;
+                        off.guard = Some(
+                            "AI curation needs the `claude` CLI (not found on PATH) — \
+                             install it, or use \"empty\"."
+                                .to_owned(),
+                        );
+                        self.transition_button(ui, &off);
+                    }
                 }
             });
         });
@@ -2541,6 +2560,16 @@ impl App {
     /// agent terminal there (the curator persona now lives in the provisioned
     /// /curate slash-command, not a bespoke system prompt).
     fn new_modpack_concierge(&mut self) {
+        // Belt-and-suspenders for the disabled button: never create an empty
+        // pack + open a raw shell when AI curation can't run.
+        if !self.agent_available {
+            self.error = Some(
+                "AI curation needs the `claude` CLI (not found on PATH). Install it, or \
+                 create an empty modpack instead."
+                    .to_owned(),
+            );
+            return;
+        }
         let name = self.new_profile_name.trim().to_owned();
         let Some(game) = self.games.get(self.game_idx).map(|g| g.dir.clone()) else {
             return;
@@ -2620,7 +2649,7 @@ impl App {
                              /audit-ids, /sort, /conflicts. You can also open a terminal \
                              there yourself and get the exact same thing.",
                         );
-                        if !which_agent_available() {
+                        if !self.agent_available {
                             ui.add_space(6.0);
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 170, 90),
