@@ -80,6 +80,10 @@ pub struct ConvergeReport {
 /// Data) still needs its `install_root = "game"` set explicitly.
 pub fn resolve_layouts(repo: &Repo, plan: &Plan) -> Result<Vec<String>> {
     let manifest_path = repo.profile.join("manifest.toml");
+    // The game's own adapter decides whether a built archive is a foundational
+    // tool it promotes (a script extender, …) — core stays ignorant of what any
+    // tool is and only routes it to the root the adapter names.
+    let adapter = crate::game::adapter_for(&plan.game.kind).ok();
     let mut resolved = Vec::new();
     for m in &plan.mods {
         let Some(md5) = &m.md5 else { continue };
@@ -100,13 +104,17 @@ pub fn resolve_layouts(repo: &Repo, plan: &Plan) -> Result<Vec<String>> {
         } else {
             Vec::new()
         };
-        // A script extender (skse64_loader.exe & co. at the archive root) must
-        // deploy to the GAME root, not Data/ — else the loader lands in Data/
-        // and launch can't run the game through it. Detect it and set
-        // `install_root = "game"` (a one-off fix; skip once already there).
-        let need_root = m.install_root != "game" && crate::layout::is_script_extender(&build);
+        // A promoted foundational tool (e.g. a script extender, whose loader must
+        // sit at the game root, not Data/) installs to the tool's own root. The
+        // adapter recognises it from the archive's top-level files; core just
+        // applies the root it names (a one-off fix; skip once already there).
+        let promoted =
+            adapter.and_then(|a| a.promoted_tool_for(&crate::layout::top_level_files(&build)));
+        let promo_root = promoted
+            .map(|t| t.install_root)
+            .filter(|r| m.install_root != *r);
         let need_layout = need_subdir || !missing_plugins.is_empty();
-        if !need_layout && !need_root {
+        if !need_layout && promo_root.is_none() {
             continue;
         }
         let mut plugins = m.plugins.clone();
@@ -120,12 +128,16 @@ pub fn resolve_layouts(repo: &Repo, plan: &Plan) -> Result<Vec<String>> {
                 &plugins,
             )?;
         }
-        if need_root {
-            doc = crate::manifest_edit::set_install_root(&doc, &m.name, "game")?;
+        if let Some(root) = promo_root {
+            doc = crate::manifest_edit::set_install_root(&doc, &m.name, root)?;
         }
         crate::manifest_edit::write_manifest(&manifest_path, &doc)?;
+        let promo_note = match (promoted, promo_root) {
+            (Some(t), Some(root)) => format!(" ({} → {root} root)", t.name),
+            _ => String::new(),
+        };
         resolved.push(format!(
-            "resolved layout for {}{}{}{}",
+            "resolved layout for {}{}{}{promo_note}",
             m.name,
             hint.subdir
                 .as_deref()
@@ -135,11 +147,6 @@ pub fn resolve_layouts(repo: &Repo, plan: &Plan) -> Result<Vec<String>> {
                 format!(" (plugins: {})", plugins.join(", "))
             } else {
                 String::new()
-            },
-            if need_root {
-                " (script extender → game root)"
-            } else {
-                ""
             },
         ));
     }

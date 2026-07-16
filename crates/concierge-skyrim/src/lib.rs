@@ -20,6 +20,12 @@ pub static ADAPTER: Bethesda = Bethesda {
         "Dragonborn.esm",
     ],
     plugin_prefix: "",
+    script_extender: Some(concierge_pluginorder::adapter::ScriptExtender {
+        id: "skse",
+        name: "SKSE",
+        loader: "skse_loader.exe",
+        home: "https://skse.silverlock.org/",
+    }),
 };
 
 /// Resolve this leaf's game `kind` to its adapter.

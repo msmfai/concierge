@@ -23,6 +23,12 @@ pub static ADAPTER: Bethesda = Bethesda {
         "DLCUltraHighResolution.esm",
     ],
     plugin_prefix: "*",
+    script_extender: Some(concierge_pluginorder::adapter::ScriptExtender {
+        id: "f4se",
+        name: "F4SE",
+        loader: "f4se_loader.exe",
+        home: "https://f4se.silverlock.org/",
+    }),
 };
 
 /// Resolve this leaf's game `kind` to its adapter.

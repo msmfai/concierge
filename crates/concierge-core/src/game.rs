@@ -85,6 +85,28 @@ pub const MODLIST_LEXICON: Lexicon = Lexicon {
     plugins: "mods",
 };
 
+/// A foundational tool a game **promotes** above the ordinary mod list — a
+/// script extender, a mod loader, whatever that game's world calls for. It is
+/// deliberately generic: core neither defines nor requires any particular kind,
+/// and imposes no shared ontology across games. A game crate decides what (if
+/// anything) it promotes and what the fields mean; the player still chooses
+/// whether to install it. Core only routes and surfaces it — it never knows
+/// what a "script extender" is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromotedTool {
+    /// Stable short id, e.g. `"f4se"`.
+    pub id: &'static str,
+    /// Display name, e.g. `"F4SE"`.
+    pub name: &'static str,
+    /// One line: what it is and why a pack wants it.
+    pub blurb: &'static str,
+    /// Canonical home to get it from, for the UI to point at.
+    pub home: &'static str,
+    /// The [`install_roots`](GameAdapter::install_roots) name its archive
+    /// deploys to (e.g. `"game"`), so core can route it there.
+    pub install_root: &'static str,
+}
+
 pub trait GameAdapter: Sync {
     fn kind(&self) -> &'static str;
     fn nexus_domain(&self) -> Option<&'static str>;
@@ -145,6 +167,22 @@ pub trait GameAdapter: Sync {
     /// and the missing-master check resolve the base from the adapter instead of
     /// a hardcoded `kind` match. Default: not a plugin-order game.
     fn plugin_bases(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+    /// Foundational tools this game promotes above the mod list (a script
+    /// extender, a mod loader, …). Optional to use; most games promote nothing
+    /// (default empty). A game crate — never core — decides what belongs here,
+    /// so no cross-game ontology is imposed.
+    fn promoted_tools(&self) -> Vec<PromotedTool> {
+        Vec::new()
+    }
+    /// If a built archive — identified only by its top-level entry names — IS
+    /// one of the promoted tools, return it. Core uses this to route the archive
+    /// to the tool's [`install_root`](PromotedTool::install_root) and surface it
+    /// as promoted, without knowing what the tool means. The game crate owns the
+    /// recognition (e.g. "a loader exe sits at the root"). Default: recognises
+    /// nothing.
+    fn promoted_tool_for(&self, _top_level: &[String]) -> Option<PromotedTool> {
         None
     }
     /// Post-launch (and pre-launch) health for this game: parse the runtime's

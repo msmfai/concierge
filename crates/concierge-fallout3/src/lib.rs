@@ -21,6 +21,12 @@ pub static ADAPTER: Bethesda = Bethesda {
         "Zeta.esm",
     ],
     plugin_prefix: "",
+    script_extender: Some(concierge_pluginorder::adapter::ScriptExtender {
+        id: "fose",
+        name: "FOSE",
+        loader: "fose_loader.exe",
+        home: "https://fose.silverlock.org/",
+    }),
 };
 
 /// Resolve this leaf's game `kind` to its adapter.
