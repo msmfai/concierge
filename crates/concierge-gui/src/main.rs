@@ -1050,8 +1050,19 @@ impl App {
         };
         if let Some(h) = &tr.hover {
             resp = resp.on_hover_text(h.as_str());
-        } else if let Some(g) = &tr.guard {
-            resp = resp.on_hover_text(g.as_str());
+        }
+        // A disabled button must say WHY. egui suppresses on_hover_text on a
+        // disabled widget, so the guard (the reason it's blocked) was invisible
+        // exactly when it mattered — a greyed button read as a silent dead end.
+        // Route the guard to the disabled-hover path when disabled.
+        if let Some(g) = &tr.guard {
+            resp = if tr.enabled {
+                resp.on_hover_text(g.as_str())
+            } else {
+                resp.on_disabled_hover_text(g.as_str())
+            };
+        } else if !tr.enabled {
+            resp = resp.on_disabled_hover_text("unavailable right now");
         }
         if resp.clicked() {
             self.dispatch_intent(&tr.id);
