@@ -247,6 +247,76 @@ pub fn home_dir() -> PathBuf {
         .map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
+/// The freedesktop `.desktop` entry that makes this exe the `nxm://` handler.
+/// A browser "Mod Manager Download" (free-user, one click per file — the same
+/// token flow MO2/Vortex/Wabbajack use) then routes to `concierge nxm <url>`.
+#[must_use]
+pub fn nxm_desktop_entry(exe: &str) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Concierge (nxm handler)\n\
+         Exec={exe} nxm %u\n\
+         NoDisplay=true\n\
+         MimeType=x-scheme-handler/nxm;\n"
+    )
+}
+
+/// Register `exe` as the OS handler for `nxm://` links — the missing link that
+/// makes free-account Nexus downloads work end to end: click "Mod Manager
+/// Download" on a mod page and the signed handoff routes here to be fetched +
+/// hash-verified. Best-effort per OS; returns a human status line.
+///
+/// This is a *routing* registration only — it never downloads without a click,
+/// so it stays within Nexus's AUP (no automation).
+///
+/// # Errors
+/// Returns a message if the handler files/keys couldn't be written, or if the
+/// current OS isn't wired up yet.
+pub fn register_nxm_handler(exe: &std::path::Path) -> Result<String, String> {
+    let exe = exe.display().to_string();
+    if cfg!(target_os = "linux") {
+        let apps = home_dir().join(".local").join("share").join("applications");
+        std::fs::create_dir_all(&apps).map_err(|e| e.to_string())?;
+        let file = apps.join("concierge-nxm.desktop");
+        std::fs::write(&file, nxm_desktop_entry(&exe)).map_err(|e| e.to_string())?;
+        let _ = std::process::Command::new("xdg-mime")
+            .args(["default", "concierge-nxm.desktop", "x-scheme-handler/nxm"])
+            .status();
+        let _ = std::process::Command::new("update-desktop-database")
+            .arg(&apps)
+            .status();
+        Ok(format!(
+            "1-click downloads enabled ({}). Now click \"Mod Manager Download\" on any \
+             Nexus mod page and it lands here.",
+            file.display()
+        ))
+    } else if cfg!(windows) {
+        let cmd = format!("\"{exe}\" nxm \"%1\"");
+        let reg = |args: &[&str]| std::process::Command::new("reg").args(args).status();
+        reg(&["add", r"HKCU\Software\Classes\nxm", "/ve", "/d", "URL:nxm Protocol", "/f"])
+            .map_err(|e| e.to_string())?;
+        reg(&["add", r"HKCU\Software\Classes\nxm", "/v", "URL Protocol", "/d", "", "/f"])
+            .map_err(|e| e.to_string())?;
+        reg(&[
+            "add",
+            r"HKCU\Software\Classes\nxm\shell\open\command",
+            "/ve",
+            "/d",
+            &cmd,
+            "/f",
+        ])
+        .map_err(|e| e.to_string())?;
+        Ok("1-click downloads enabled. Now click \"Mod Manager Download\" on any Nexus \
+            mod page and it lands here."
+            .to_owned())
+    } else {
+        Err("Automatic nxm:// registration isn't wired up on this OS yet — on macOS the \
+             app bundle declares the scheme; see the docs."
+            .to_owned())
+    }
+}
+
 /// The per-user config directory, `$XDG_CONFIG_HOME/concierge` or
 /// `~/.config/concierge`. Where API keys live.
 #[must_use]
@@ -295,7 +365,15 @@ pub fn data_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_tool, override_env, tools_dir};
+    use super::{find_tool, nxm_desktop_entry, override_env, tools_dir};
+
+    #[test]
+    fn nxm_desktop_entry_routes_the_scheme_to_the_exe() {
+        let d = nxm_desktop_entry("/opt/concierge/concierge");
+        assert!(d.contains("MimeType=x-scheme-handler/nxm;"));
+        assert!(d.contains("Exec=/opt/concierge/concierge nxm %u"));
+        assert!(d.contains("[Desktop Entry]"));
+    }
 
     #[test]
     fn override_env_is_sanitized_and_prefixed() {
