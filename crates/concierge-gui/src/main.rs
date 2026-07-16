@@ -3553,16 +3553,16 @@ impl App {
                         // The add-to-manifest action, styled green like Nexus'
                         // download button; "added" shows a disabled confirmation.
                         if hit.added {
-                            ui.add_enabled(false, egui::Button::new("✓ In manifest"));
+                            ui.add_enabled(false, egui::Button::new("✓ In pack"));
                         } else if let Some(tr) = add {
                             let btn = egui::Button::new(
-                                egui::RichText::new("＋ Add to manifest")
+                                egui::RichText::new("＋ Add to pack")
                                     .color(egui::Color32::WHITE),
                             )
                             .fill(egui::Color32::from_rgb(78, 141, 74));
                             if ui
                                 .add_enabled(tr.enabled, btn)
-                                .on_hover_text("append a [[mod]] and pin its main file")
+                                .on_hover_text("add this mod to your pack")
                                 .clicked()
                             {
                                 self.dispatch_intent(&tr.id);
