@@ -1305,6 +1305,9 @@ impl App {
                         .iter()
                         .find(|l| l.contains('⏸') || l.contains("still needed"))
                         .cloned();
+                    // A "⚠ …" line (e.g. conflicts found) is a real outcome to
+                    // surface amber in the banner, not bury in the log.
+                    let warned = lines.iter().find(|l| l.contains('⚠')).cloned();
                     let placed = lines
                         .iter()
                         .rev()
@@ -1317,15 +1320,15 @@ impl App {
                         reload_pending.store(true, Ordering::SeqCst);
                     }
                     let _ = tx.send(format!("{name} done"));
-                    let (kind, summary) = manual.map_or_else(
-                        || {
-                            (
-                                FlashKind::Ok,
-                                placed.unwrap_or_else(|| format!("{name} finished")),
-                            )
-                        },
-                        |m| (FlashKind::Warn, m),
-                    );
+                    let (kind, summary) = if let Some(m) = manual {
+                        (FlashKind::Warn, m)
+                    } else if let Some(w) = warned {
+                        (FlashKind::Warn, w)
+                    } else if let Some(p) = placed {
+                        (FlashKind::Ok, p)
+                    } else {
+                        (FlashKind::Ok, format!("{name} finished"))
+                    };
                     let _ = flash.send((kind, summary));
                 }
                 Err(e) => {
@@ -1698,10 +1701,19 @@ fn run_blocking(
         Action::Conflicts => {
             let (parsed, matrix) = concierge_pluginorder::conflict_matrix(plan)
                 .map_err(|e| concierge::Error::Other(e.to_string()))?;
-            let mut out = vec![format!(
-                "{parsed} plugins, {} conflicting record(s)",
-                matrix.conflicts.len()
-            )];
+            let n = matrix.conflicts.len();
+            // A self-explanatory summary as the FIRST line so it surfaces in the
+            // outcome banner (amber when there are clashes), not just the log —
+            // testers said "no clash was ever surfaced" (i2c6, i3c6).
+            let head = if n == 0 {
+                format!("✅ No conflicts — your {parsed} plugin(s) don't overwrite each other.")
+            } else {
+                format!(
+                    "⚠ {n} conflicting record(s) across {parsed} plugins — the later mod wins \
+                     (listed below). Use \"Merge conflicts\" to auto-resolve safely."
+                )
+            };
+            let mut out = vec![head];
             for c in matrix.conflicts.iter().take(40) {
                 let losers: Vec<&str> = c
                     .carriers
