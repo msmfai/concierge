@@ -2355,6 +2355,23 @@ impl eframe::App for App {
                             }
                         });
                     }
+                    // Script-extender heads-up when the pack declares it needs one
+                    // (i4c2: "no SKSE warning"). Concierge launches through the
+                    // extender but doesn't install it — it's a separate download.
+                    if let Some(se) = self
+                        .manifest
+                        .as_ref()
+                        .and_then(|m| m.compat.script_extender.clone())
+                    {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 170, 90),
+                            format!(
+                                "\u{2699} Needs a script extender (SKSE/F4SE) \u{2265} {se} — \
+                                 install it into your game folder (silverlock.org); Concierge \
+                                 launches the game through it."
+                            ),
+                        );
+                    }
                     // RELATIONAL — cross-mod concerns, kept distinct from the mods.
                     if bethesda && !order.is_empty() {
                         ui.separator();
@@ -4172,6 +4189,28 @@ impl App {
             );
             ui.end_row();
         });
+        // This mod's declared requirements (framework/script-extender/other) —
+        // shown in context, not only in the separate relations section
+        // (i4c2: "mod details show no requirements/dependencies").
+        if let Some(man) = &self.manifest {
+            let reqs: Vec<&concierge::manifest::Requirement> = man
+                .relations
+                .requires
+                .iter()
+                .filter(|r| r.name == *name)
+                .collect();
+            if !reqs.is_empty() {
+                ui.separator();
+                ui.strong("requires");
+                for r in reqs {
+                    let v = r
+                        .min_version
+                        .as_deref()
+                        .map_or_else(String::new, |v| format!(" \u{2265} {v}"));
+                    ui.label(format!("\u{2022} {}{v}", r.needs));
+                }
+            }
+        }
         if !m.plugins.is_empty() {
             ui.separator();
             ui.strong("config · provides (plugins)");
