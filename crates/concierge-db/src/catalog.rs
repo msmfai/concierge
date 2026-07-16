@@ -124,6 +124,12 @@ impl Catalog {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(path)?;
+        // WAL so a reader (the browser's catalog search) can read already-synced
+        // rows *while* a sync is still writing later pages — without this the
+        // default rollback journal locks the DB and browsing is gated on the
+        // whole (tens-of-thousands-of-rows) sync finishing. busy_timeout keeps a
+        // read that races a page-commit waiting briefly instead of erroring.
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
         conn.execute_batch(DDL)?;
         Ok(Self { conn })
     }
@@ -422,6 +428,37 @@ mod tests {
         assert_eq!(c.count().unwrap(), 3);
         let names = c.names("skyrimspecialedition", &[1, 2]).unwrap();
         assert_eq!(names.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The browse-while-syncing guarantee: a second connection (the browser's
+    // catalog search) must see rows a first connection (the running sync) has
+    // already written, page by page — not be locked out until the sync ends.
+    #[test]
+    fn partial_rows_are_visible_to_a_second_reader_mid_sync() {
+        let dir = std::env::temp_dir().join(format!("cg-cat-mid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("catalog.sqlite");
+        let mut writer = Catalog::open(&path).unwrap();
+        // WAL is what makes the concurrent read possible.
+        let mode: String = writer
+            .conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "catalog must open in WAL mode");
+
+        // "page 1" of a sync lands.
+        writer
+            .upsert(&[row("cyberpunk2077", 1, "Cyber Engine Tweaks", 227_000, 17_000_000)])
+            .unwrap();
+        // A separate reader opens mid-sync and can already search page 1.
+        let reader = Catalog::open(&path).unwrap();
+        assert_eq!(reader.search("cyberpunk2077", "engine", "", 10).unwrap().len(), 1);
+        // "page 2" lands on the writer; the same reader now sees it too.
+        writer
+            .upsert(&[row("cyberpunk2077", 2, "redscript", 158_000, 11_000_000)])
+            .unwrap();
+        assert_eq!(reader.count_domain("cyberpunk2077").unwrap(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
