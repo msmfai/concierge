@@ -1427,6 +1427,24 @@ fn run_blocking(
     match action {
         Action::Realize => {
             let mut out = Vec::new();
+            // The most common Apply blocker in testing: no game install folder
+            // set. Name the exact fix up front instead of failing opaquely deep
+            // in deploy ("not realized" / raw path error).
+            if plan.game.pristine.trim().is_empty() {
+                return Err(concierge::Error::Other(
+                    "No game install folder set — open Settings and set \"Game install \
+                     folder\" to where your game is installed, then Apply. Concierge \
+                     installs into a copy; your original is never touched."
+                        .into(),
+                ));
+            }
+            if !std::path::Path::new(&plan.game.pristine).exists() {
+                return Err(concierge::Error::Other(format!(
+                    "Game install folder not found: {} — fix it in Settings \u{2192} \
+                     Game install folder, then Apply.",
+                    plan.game.pristine
+                )));
+            }
             deploy_stage(tx, "back up saves");
             if let Some(b) = concierge::saves::backup(repo, plan)? {
                 out.push(format!(
@@ -1462,9 +1480,19 @@ fn run_blocking(
                         ));
                     }
                 }
-                return Err(concierge::Error::Other(
-                    "Apply preflight: unresolved items above must be fixed first".into(),
-                ));
+                // Name the concrete next step, not "fix the items above".
+                let dl = converge.blocked.len();
+                let msg = if dl > 0 {
+                    format!(
+                        "Apply blocked: {dl} mod(s) still need downloading — click \
+                         Download (or drop the files into ~/Downloads), then Apply again."
+                    )
+                } else {
+                    "Apply blocked: resolve the unpinned/unbuilt items listed above \
+                     (usually Download, then Apply again)."
+                        .to_owned()
+                };
+                return Err(concierge::Error::Other(msg));
             };
             out.push(format!(
                 "placed {} files ({} owned)",
