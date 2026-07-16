@@ -294,10 +294,25 @@ pub fn register_nxm_handler(exe: &std::path::Path) -> Result<String, String> {
     } else if cfg!(windows) {
         let cmd = format!("\"{exe}\" nxm \"%1\"");
         let reg = |args: &[&str]| std::process::Command::new("reg").args(args).status();
-        reg(&["add", r"HKCU\Software\Classes\nxm", "/ve", "/d", "URL:nxm Protocol", "/f"])
-            .map_err(|e| e.to_string())?;
-        reg(&["add", r"HKCU\Software\Classes\nxm", "/v", "URL Protocol", "/d", "", "/f"])
-            .map_err(|e| e.to_string())?;
+        reg(&[
+            "add",
+            r"HKCU\Software\Classes\nxm",
+            "/ve",
+            "/d",
+            "URL:nxm Protocol",
+            "/f",
+        ])
+        .map_err(|e| e.to_string())?;
+        reg(&[
+            "add",
+            r"HKCU\Software\Classes\nxm",
+            "/v",
+            "URL Protocol",
+            "/d",
+            "",
+            "/f",
+        ])
+        .map_err(|e| e.to_string())?;
         reg(&[
             "add",
             r"HKCU\Software\Classes\nxm\shell\open\command",
@@ -307,9 +322,11 @@ pub fn register_nxm_handler(exe: &std::path::Path) -> Result<String, String> {
             "/f",
         ])
         .map_err(|e| e.to_string())?;
-        Ok("1-click downloads enabled. Now click \"Mod Manager Download\" on any Nexus \
+        Ok(
+            "1-click downloads enabled. Now click \"Mod Manager Download\" on any Nexus \
             mod page and it lands here."
-            .to_owned())
+                .to_owned(),
+        )
     } else if cfg!(target_os = "macos") {
         register_nxm_macos(&exe)
     } else {
