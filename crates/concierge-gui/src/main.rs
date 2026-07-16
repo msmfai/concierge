@@ -1649,10 +1649,27 @@ fn run_blocking(
         }
         Action::Check => {
             let drift = concierge::check::check(repo, plan, false)?;
+            let installed = concierge::state::Realized::load(repo)
+                .ok()
+                .is_some_and(|r| r.plan_hash.is_some());
             if drift.is_empty() {
-                Ok(vec!["clean".to_owned()])
+                // "clean" alone read as "the pack is good" even when nothing was
+                // ever installed (i1c6). Say what's clean, and the install state.
+                let msg = if installed {
+                    "Verify: clean — your installed setup matches and the original game \
+                     files are untouched."
+                } else {
+                    "Verify: your original game files are untouched. Nothing is installed \
+                     yet — Download, then Apply, to install your pack."
+                };
+                Ok(vec![msg.to_owned()])
             } else {
-                Ok(drift.iter().map(|d| format!("{d:?}")).collect())
+                let mut out = vec![format!(
+                    "Verify: {} change(s) from the original game detected:",
+                    drift.len()
+                )];
+                out.extend(drift.iter().map(|d| format!("  {d:?}")));
+                Ok(out)
             }
         }
         Action::Launch => {

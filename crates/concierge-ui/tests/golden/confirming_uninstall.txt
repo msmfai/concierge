@@ -3,7 +3,7 @@
 +----------------------------------------------------------------+
 | workspace: /ws (2 games)                                       |
 | game: skyrimse · profile: modpack                              |
-| mode: Edit · tab: Setup                                        |
+| mode: Editing · tab: Setup                                     |
 +----------------------------------------------------------------+
 | ! Uninstall — remove the installed mods from the game?         |
 +----------------------------------------------------------------+
