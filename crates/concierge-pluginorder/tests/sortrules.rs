@@ -1,4 +1,4 @@
-//! Hermetic tests for the native masterlist parser + name matcher.
+//! Hermetic tests for the native sort-rule parser + name matcher.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-use concierge_pluginorder::masterlist::Masterlist;
+use concierge_pluginorder::sortrules::SortRules;
 
 const YAML: &str = r"
 common:
@@ -32,7 +32,7 @@ plugins:
 
 #[test]
 fn parses_plugins_groups_dirty_tags() {
-    let ml = Masterlist::parse(YAML).unwrap();
+    let ml = SortRules::parse(YAML).unwrap();
     assert_eq!(ml.groups.len(), 2);
     assert_eq!(ml.plugins.len(), 3);
     let coast = ml.for_plugin("DLCCoast.esm");
@@ -47,7 +47,7 @@ fn parses_plugins_groups_dirty_tags() {
 
 #[test]
 fn regex_names_match_creation_club() {
-    let ml = Masterlist::parse(YAML).unwrap();
+    let ml = SortRules::parse(YAML).unwrap();
     let cc = ml.for_plugin("ccBGSFO4115-X02.esl");
     assert_eq!(cc.len(), 1);
     assert_eq!(cc[0].group.as_deref(), Some("CC"));

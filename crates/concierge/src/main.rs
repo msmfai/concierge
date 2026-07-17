@@ -241,7 +241,7 @@ enum Cmd {
     },
     /// Import a .wabbajack modlist you have (read-only) and report its mods,
     /// sources, and hashes — interop, not redistribution
-    ImportWabbajack {
+    ImportModpack {
         /// Path to a .wabbajack file (or a raw modlist JSON)
         path: String,
         /// Also fetch + xxHash64-verify archives into the shared cache
@@ -469,7 +469,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
     // Converting a .wabbajack into a manifest CREATES a profile — no repo yet.
-    if let Cmd::ImportWabbajack {
+    if let Cmd::ImportModpack {
         path,
         to_manifest: Some(out),
         ..
@@ -481,9 +481,9 @@ fn run() -> Result<()> {
             .is_some_and(|e| e.eq_ignore_ascii_case("json"));
         let list = if is_json {
             let bytes = std::fs::read(p).ctx(p)?;
-            concierge_wabbajack::ModList::from_modlist_json(&bytes)
+            concierge_modpack_import::ModList::from_modlist_json(&bytes)
         } else {
-            concierge_wabbajack::ModList::from_wabbajack_file(p)
+            concierge_modpack_import::ModList::from_modpack_archive(p)
         }
         .map_err(|e| Error::Other(e.to_string()))?;
         std::fs::write(out, list.to_manifest_toml()).ctx(std::path::Path::new(out))?;
@@ -768,7 +768,7 @@ fn run() -> Result<()> {
                     .is_some()
                 {
                     let (path, order) =
-                        concierge_pluginorder::loot::apply_order(&repo, &plan, None)?;
+                        concierge_pluginorder::loadorder::apply_order(&repo, &plan, None)?;
                     println!(
                         "  sorted    {} entries in LOOT order → {}",
                         order.len(),
@@ -1422,7 +1422,7 @@ fn run() -> Result<()> {
             }
         },
         Cmd::Sort { apply } => {
-            let report = concierge_pluginorder::loot::sort(&repo, &plan)?;
+            let report = concierge_pluginorder::loadorder::sort(&repo, &plan)?;
             if report.current == report.suggested {
                 println!("  order     LOOT agrees with the current load order");
             } else {
@@ -1438,7 +1438,8 @@ fn run() -> Result<()> {
                 println!("  tags      {plugin}: {}", tags.join(", "));
             }
             if apply {
-                let (path, order) = concierge_pluginorder::loot::apply_order(&repo, &plan, None)?;
+                let (path, order) =
+                    concierge_pluginorder::loadorder::apply_order(&repo, &plan, None)?;
                 println!(
                     "  applied   wrote {} entries to {} in resolved order",
                     order.len(),
@@ -1549,7 +1550,7 @@ fn run() -> Result<()> {
             std::fs::copy(&report.resolver, &deployed).ctx(&deployed)?;
             // 4. apply the resolved load order to plugins.txt, resolver LAST
             let (_, order) =
-                concierge_pluginorder::loot::apply_order(&repo, &plan, Some(resolver_name))?;
+                concierge_pluginorder::loadorder::apply_order(&repo, &plan, Some(resolver_name))?;
             println!(
                 "  ordered   plugins.txt in resolved order ({} entries, resolver last)",
                 order.len()
@@ -1697,7 +1698,7 @@ fn run() -> Result<()> {
                 }
             }
         }
-        Cmd::ImportWabbajack {
+        Cmd::ImportModpack {
             path,
             fetch,
             limit,
@@ -1709,9 +1710,9 @@ fn run() -> Result<()> {
                 .is_some_and(|e| e.eq_ignore_ascii_case("json"));
             let list = if is_json {
                 let bytes = std::fs::read(p).ctx(p)?;
-                concierge_wabbajack::ModList::from_modlist_json(&bytes)
+                concierge_modpack_import::ModList::from_modlist_json(&bytes)
             } else {
-                concierge_wabbajack::ModList::from_wabbajack_file(p)
+                concierge_modpack_import::ModList::from_modpack_archive(p)
             }
             .map_err(|e| Error::Other(e.to_string()))?;
             let nexus = list.nexus_mods();
@@ -1749,7 +1750,7 @@ fn run() -> Result<()> {
             );
             println!("  nexus mods (map to [[mod]] entries):");
             for a in nexus.iter().take(12) {
-                if let concierge_wabbajack::Source::Nexus {
+                if let concierge_modpack_import::Source::Nexus {
                     mod_id, file_id, ..
                 } = &a.source
                 {
@@ -1764,13 +1765,15 @@ fn run() -> Result<()> {
                 // fetch + verify the smallest archive of EACH fetchable source
                 // kind (so both the Http and Nexus paths are exercised with the
                 // least download), capped at `limit`.
-                let mut smallest: std::collections::BTreeMap<&str, &concierge_wabbajack::Archive> =
-                    std::collections::BTreeMap::new();
+                let mut smallest: std::collections::BTreeMap<
+                    &str,
+                    &concierge_modpack_import::Archive,
+                > = std::collections::BTreeMap::new();
                 for a in &list.archives {
                     let kind = match &a.source {
-                        concierge_wabbajack::Source::Nexus { .. } => "Nexus",
-                        concierge_wabbajack::Source::Http { .. } => "Http",
-                        concierge_wabbajack::Source::Other { .. } => continue,
+                        concierge_modpack_import::Source::Nexus { .. } => "Nexus",
+                        concierge_modpack_import::Source::Http { .. } => "Http",
+                        concierge_modpack_import::Source::Other { .. } => continue,
                     };
                     let smaller = smallest.get(kind).is_none_or(|e| a.size < e.size);
                     if smaller {
@@ -1780,7 +1783,7 @@ fn run() -> Result<()> {
                 println!("  fetch     verifying the smallest of each source kind against their xxHash64:");
                 for a in smallest.into_values().take(limit) {
                     let remote = match &a.source {
-                        concierge_wabbajack::Source::Nexus {
+                        concierge_modpack_import::Source::Nexus {
                             game,
                             mod_id,
                             file_id,
@@ -1789,10 +1792,10 @@ fn run() -> Result<()> {
                             mod_id: *mod_id,
                             file_id: *file_id,
                         },
-                        concierge_wabbajack::Source::Http { url } => {
+                        concierge_modpack_import::Source::Http { url } => {
                             Remote::Http { url: url.clone() }
                         }
-                        concierge_wabbajack::Source::Other { kind } => {
+                        concierge_modpack_import::Source::Other { kind } => {
                             Remote::Unsupported { kind: kind.clone() }
                         }
                     };

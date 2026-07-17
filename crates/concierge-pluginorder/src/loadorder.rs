@@ -1,11 +1,10 @@
-//! Native LOOT-equivalent load-order sort — no third-party engine.
+//! Native load-order sort — a stable topological sort, no third-party engine.
 //!
-//! Reproduces the parts of LOOT that matter for Concierge from the CC0
-//! masterlist we cache in `state/loot/`: master-file edges (from plugin
-//! headers), the masterlist's `after`/`req` and group ordering, and the
-//! overlap tie-break (the plugin overriding fewer records loads later).
-//! Sorting is a stable topological sort; the result is advisory (the manifest
-//! stays the ordering authority) plus surfaced dirty/tag metadata.
+//! Reads the community CC0 sort-rule data (the public masterlists cached in
+//! `state/sortdata/`): master-file edges (from plugin headers), the rules'
+//! `after`/`req` and group ordering, and the overlap tie-break (the plugin
+//! overriding fewer records loads later). The result is advisory — the manifest
+//! stays the ordering authority — plus surfaced dirty/tag metadata.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
@@ -16,9 +15,9 @@ use concierge::plan::Plan;
 use concierge::repo::Repo;
 use concierge_esp::reader::Plugin;
 
-use crate::masterlist::Masterlist;
+use crate::sortrules::SortRules;
 
-/// Masterlist metadata-syntax branches, newest first.
+/// `SortRules` metadata-syntax branches, newest first.
 const BRANCHES: &[&str] = &["v0.26", "v0.21"];
 
 #[derive(Debug, Default)]
@@ -39,7 +38,7 @@ fn add_edge(before: &mut [BTreeSet<usize>], a: usize, b: usize) {
     }
 }
 
-fn masterlist_repo(kind: &str) -> Option<&'static str> {
+fn sortrules_repo(kind: &str) -> Option<&'static str> {
     match kind {
         "fallout4" => Some("fallout4"),
         "skyrimse" => Some("skyrimspecialedition"),
@@ -60,8 +59,8 @@ fn fetch_to(path: &Path, url: &str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_masterlist(repo: &Repo, repo_name: &str) -> Result<PathBuf> {
-    let path = repo.loot_dir().join(format!("{repo_name}.yaml"));
+fn ensure_sortrules(repo: &Repo, repo_name: &str) -> Result<PathBuf> {
+    let path = repo.sortdata_dir().join(format!("{repo_name}.yaml"));
     if path.exists() {
         return Ok(path);
     }
@@ -89,14 +88,14 @@ fn load_order_plugins(plan: &Plan) -> Result<Vec<(String, Plugin)>> {
 
 #[allow(clippy::too_many_lines, clippy::indexing_slicing)] // indices are loop-bounded over equal-length vecs
 pub fn sort(repo: &Repo, plan: &Plan) -> Result<SortReport> {
-    let repo_name = masterlist_repo(&plan.game.kind).ok_or_else(|| {
+    let repo_name = sortrules_repo(&plan.game.kind).ok_or_else(|| {
         Error::Other(format!(
             "sort: '{}' is not a LOOT-supported game",
             plan.game.kind
         ))
     })?;
-    let ml_path = ensure_masterlist(repo, repo_name)?;
-    let ml = Masterlist::parse(&std::fs::read_to_string(&ml_path).ctx(&ml_path)?)
+    let ml_path = ensure_sortrules(repo, repo_name)?;
+    let ml = SortRules::parse(&std::fs::read_to_string(&ml_path).ctx(&ml_path)?)
         .map_err(|e| Error::Other(format!("masterlist parse: {e}")))?;
 
     let plugins = load_order_plugins(plan)?;
@@ -304,7 +303,7 @@ fn depth(
     d
 }
 
-fn group_ranks(ml: &Masterlist) -> BTreeMap<String, usize> {
+fn group_ranks(ml: &SortRules) -> BTreeMap<String, usize> {
     let mut after: BTreeMap<String, Vec<String>> = BTreeMap::new();
     after.entry("default".to_owned()).or_default();
     for g in &ml.groups {

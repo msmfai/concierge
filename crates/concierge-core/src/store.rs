@@ -278,7 +278,7 @@ fn find_in_dir(
         }
         if let Some(want) = xx_pin {
             let bytes = std::fs::read(&p).ctx(&p)?;
-            if concierge_hash::matches_wabbajack_hash(&bytes, want) {
+            if concierge_hash::matches_xxhash64_base64(&bytes, want) {
                 return Ok(Some(p));
             }
         }
@@ -344,7 +344,7 @@ pub fn fetch_verified(
     let dest = store_dir.join(name);
     if dest.is_file() {
         let bytes = std::fs::read(&dest).ctx(&dest)?;
-        if concierge_hash::matches_wabbajack_hash(&bytes, expected_b64) {
+        if concierge_hash::matches_xxhash64_base64(&bytes, expected_b64) {
             return Ok(VerifiedFetch::Cached(dest));
         }
     }

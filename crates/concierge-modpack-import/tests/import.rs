@@ -1,8 +1,8 @@
-//! Import proofs on REAL Wabbajack data. The committed fixture is a small real
-//! slice of the "Devil's Food Cake" FO4 list (real Nexus/Http/Mega archives);
-//! the gated test parses the full 14 MB sample when present. Includes the
-//! metamorphic container relation: parsing the JSON directly must equal parsing
-//! it wrapped in a `.wabbajack` ZIP.
+//! Import proofs on a SYNTHETIC fixture (`fixtures/sample.modlist.json`) — a
+//! hand-authored modlist with invented ids/hashes/URLs that exercises every
+//! source kind (Nexus/Http/other). A gated test parses a user-provided real
+//! sample when present. Includes the metamorphic container relation: parsing the
+//! JSON directly must equal parsing it wrapped in a `.wabbajack` ZIP.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -12,15 +12,15 @@
 
 use std::io::Write as _;
 
-use concierge_wabbajack::{ModList, Source};
+use concierge_modpack_import::{ModList, Source};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/sample.modlist.json");
 
 #[test]
-fn parses_real_fixture_into_concierge_model() {
+fn parses_fixture_into_concierge_model() {
     let list = ModList::from_modlist_json(FIXTURE).unwrap();
     assert_eq!(list.game, "Fallout4");
-    assert_eq!(list.name, "Devil's Food Cake");
+    assert_eq!(list.name, "Synthetic Sample Pack");
     assert_eq!(list.archives.len(), 6);
 
     // the 4 Nexus archives carry mod/file ids that map onto Concierge [[mod]]
@@ -74,7 +74,7 @@ fn container_roundtrip_equals_direct_parse() {
     let tmp = std::env::temp_dir().join(format!("concierge-wj-{}.wabbajack", std::process::id()));
     std::fs::write(&tmp, &bytes).unwrap();
 
-    let via_container = ModList::from_wabbajack_file(&tmp).unwrap();
+    let via_container = ModList::from_modpack_archive(&tmp).unwrap();
     let direct = ModList::from_modlist_json(FIXTURE).unwrap();
 
     assert_eq!(via_container.name, direct.name);
@@ -106,14 +106,18 @@ fn parses_the_full_real_sample_when_present() {
         return;
     };
     let list = ModList::from_modlist_json(&bytes).unwrap();
-    assert_eq!(list.game, "Fallout4");
-    assert_eq!(list.archives.len(), 330);
-    assert_eq!(list.nexus_mods().len(), 291, "291 Nexus archives");
+    // Generic invariants for ANY real list — no dependence on a specific one.
+    assert!(!list.game.is_empty(), "a real list names its game");
+    assert!(!list.archives.is_empty(), "a real list has archives");
+    assert!(
+        !list.nexus_mods().is_empty(),
+        "a real list has Nexus archives"
+    );
     // the directive histogram is populated (FromArchive dominates a real list)
     assert!(list
         .directive_kinds
         .get("FromArchive")
-        .is_some_and(|&n| n > 30_000));
+        .is_some_and(|&n| n > 0));
 }
 
 #[test]

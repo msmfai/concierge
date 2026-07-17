@@ -15,7 +15,7 @@ use concierge_esp::reader::{Plugin, RecordRef};
 use concierge_esp::writer::{resolver_bytes_with, OverrideRecord};
 use concierge_esp::{formlist, lvli};
 
-use crate::masterlist::Masterlist;
+use crate::sortrules::SortRules;
 
 #[derive(Debug, Default)]
 pub struct ReconcileReport {
@@ -78,7 +78,7 @@ pub fn reconcile(repo: &Repo, plan: &Plan) -> Result<ReconcileReport> {
     let matrix =
         concierge_esp::conflicts::build(&plugins).map_err(|e| Error::Other(e.to_string()))?;
 
-    let ml = load_masterlist(repo, &plan.game.kind);
+    let ml = load_sortrules(repo, &plan.game.kind);
 
     let mut report = ReconcileReport {
         plugins: plugins.len(),
@@ -313,18 +313,18 @@ fn find_record<'a>(
     })
 }
 
-fn load_masterlist(repo: &Repo, kind: &str) -> Option<Masterlist> {
+fn load_sortrules(repo: &Repo, kind: &str) -> Option<SortRules> {
     let repo_name = match kind {
         "fallout4" => "fallout4",
         "skyrimse" => "skyrimspecialedition",
         _ => return None,
     };
-    let path = repo.loot_dir().join(format!("{repo_name}.yaml"));
+    let path = repo.sortdata_dir().join(format!("{repo_name}.yaml"));
     let text = std::fs::read_to_string(path).ok()?;
-    Masterlist::parse(&text).ok()
+    SortRules::parse(&text).ok()
 }
 
-fn tags_for(ml: Option<&Masterlist>, plugin: &str) -> lvli::Tags {
+fn tags_for(ml: Option<&SortRules>, plugin: &str) -> lvli::Tags {
     let mut tags = lvli::Tags::default();
     if let Some(ml) = ml {
         for meta in ml.for_plugin(plugin) {

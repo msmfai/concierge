@@ -134,7 +134,7 @@ impl ModList {
     }
 
     /// Parse from a `.wabbajack` file (a ZIP with a `modlist` entry).
-    pub fn from_wabbajack_file(path: &Path) -> Result<Self> {
+    pub fn from_modpack_archive(path: &Path) -> Result<Self> {
         let file = std::fs::File::open(path).map_err(|source| Error::Io {
             path: path.display().to_string(),
             source,

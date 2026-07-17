@@ -24,7 +24,7 @@ members = [
     "crates/concierge-pakregistry",
     "crates/concierge-filedrop",
     "crates/concierge-toolmerge",
-    "crates/concierge-wabbajack",
+    "crates/concierge-modpack-import",
     "crates/concierge-db",
     "crates/concierge-esp",
     "crates/concierge-fomod",

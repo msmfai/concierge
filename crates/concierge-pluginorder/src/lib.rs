@@ -12,9 +12,9 @@
 pub mod adapter;
 pub mod assets;
 mod bethesda_lints;
-pub mod loot;
-pub mod masterlist;
+pub mod loadorder;
 pub mod reconcile;
+pub mod sortrules;
 
 pub use bethesda_lints::bethesda_lints;
 

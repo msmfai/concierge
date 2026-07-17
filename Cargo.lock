@@ -803,10 +803,10 @@ dependencies = [
  "concierge-fomod",
  "concierge-games",
  "concierge-lint",
+ "concierge-modpack-import",
  "concierge-override",
  "concierge-pluginorder",
  "concierge-ui",
- "concierge-wabbajack",
  "serde_json",
 ]
 
@@ -988,6 +988,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "concierge-modpack-import"
+version = "0.4.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "toml",
+ "zip",
+]
+
+[[package]]
 name = "concierge-newvegas"
 version = "0.4.1"
 dependencies = [
@@ -1093,17 +1104,6 @@ name = "concierge-ui"
 version = "0.4.1"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "concierge-wabbajack"
-version = "0.4.1"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "toml",
- "zip",
 ]
 
 [[package]]

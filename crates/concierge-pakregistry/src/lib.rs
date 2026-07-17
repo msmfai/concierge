@@ -22,8 +22,8 @@ pub mod adapter {
 
     /// BG3's Patch 8 base module — always registered first.
     const GUSTAVX_UUID: &str = "cb555efe-2d9e-131f-8195-a89329d218ea";
-    /// `GustavX`'s real `Version64` (from BG3 Mod Manager's `IgnoredMods.json`);
-    /// used so the base entry matches what the game/BG3MM would write.
+    /// `GustavX`'s `Version64` as BG3 itself encodes its base module, so our base
+    /// entry matches what the game writes to `modsettings.lsx`.
     const GUSTAVX_VERSION64: &str = "145241946983074840";
     /// BG3's packed version 1.0.0.0 — a safe default `Version64` when a mod's
     /// real version isn't known; BG3 doesn't reject a mod on this value.
@@ -40,7 +40,8 @@ pub mod adapter {
         shaped && parts.next().is_none()
     }
 
-    /// Parse a BG3MM-style pak stem `"<Folder>_<UUID>"` into `(uuid, folder)`.
+    /// Parse the community `"<Folder>_<UUID>"` pak-stem convention into
+    /// `(uuid, folder)`.
     /// `None` when it doesn't end in a GUID (we'd need to unpack the meta.lsx).
     fn bg3_module_from_pak_stem(stem: &str) -> Option<(&str, &str)> {
         let (folder, uuid) = stem.rsplit_once('_')?;
@@ -183,7 +184,7 @@ pub mod adapter {
             }
             // Auto-discover deployed paks the manifest didn't declare, from the
             // meta.lsx (authoritative: real Folder + Version64), falling back to
-            // the BG3MM `<Folder>_<UUID>.pak` filename — so a mod loads without
+            // the community `<Folder>_<UUID>.pak` filename — so a mod loads without
             // the user hand-authoring its UUID.
             if let Some(mods_dir) = m.game.paths.get("profile_mods") {
                 if let Ok(rd) = std::fs::read_dir(mods_dir) {
@@ -347,8 +348,8 @@ pub mod adapter {
             );
             assert!(out.contains(r#"value="ImpUI""#), "folder listed");
             assert!(out.contains(r#"id="Version64""#), "version present");
-            // base game still registered first, with its REAL Version64 (matches
-            // BG3MM's IgnoredMods.json), not the generic default
+            // base game still registered first, with its REAL Version64 (as BG3
+            // encodes its base module), not the generic default
             assert!(out.contains(super::GUSTAVX_UUID));
             assert!(
                 out.contains(super::GUSTAVX_VERSION64),

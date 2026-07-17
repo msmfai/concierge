@@ -97,11 +97,11 @@ app for your platform — or build from source with `cargo build --release`.
 **“+ add game”** menu to pick your game, then create a profile — no paths or
 config files to hand-edit to get started.
 
-**The command line** starts from an example profile:
+**The command line** scaffolds a profile for you:
 
 ```sh
-cp -r examples/fallout4-profile my-pack
-$EDITOR my-pack/manifest.toml        # set where your game lives
+concierge init --game fallout4 my-pack   # scaffold a profile folder
+$EDITOR my-pack/manifest.toml            # set where your game lives
 export CONCIERGE_REPO=$PWD/my-pack
 
 concierge preview                    # show what would be installed
@@ -117,8 +117,8 @@ concierge shell --agent claude       # sandboxed agent session in the pack
 ```
 
 Runtime dependency: `bsdtar` (preinstalled on macOS and Windows 10+;
-`libarchive-tools` on Linux). More detail in [docs/](docs/) and the
-[release notes](RELEASE_NOTES.md).
+`libarchive-tools` on Linux). More detail in [docs/](docs/); per-version notes
+are on the [releases page](https://github.com/msmfai/concierge/releases).
 
 ## Modeled on how people actually mod
 
