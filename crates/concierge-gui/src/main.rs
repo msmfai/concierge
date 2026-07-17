@@ -4643,6 +4643,30 @@ mod tests {
     }
 
     #[test]
+    fn kittest_selecting_a_mod_updates_the_details_panel() {
+        // Interaction regression guard: a real click on a mod's name drives the
+        // selection and re-renders the details panel — click → state change →
+        // re-render, all through the actual egui tree. (The pointer-driven ComboBox
+        // "filter click closes the popup" bug needs real pointer events, so it's
+        // verified in the live box — dossier item 3 — not synthetic clicks.)
+        use egui_kittest::kittest::Queryable as _;
+        let app = fallout4_app();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(eframe::egui::vec2(1280.0, 800.0))
+            .build_state(|ctx, a: &mut super::App| a.update_ctx(ctx), app);
+        h.run_steps(4);
+        // the details panel shows its placeholder until a mod is selected
+        h.get_by_label_contains("click a mod");
+        // click a mod's name → selection changes → the details panel re-renders
+        h.get_by_label("alpha-textures").click();
+        h.run_steps(4);
+        assert!(
+            h.query_by_label_contains("click a mod").is_none(),
+            "details placeholder gone after selecting a mod (click drove a re-render)"
+        );
+    }
+
+    #[test]
     fn kittest_wgpu_frame_actually_paints() {
         // Render the real frame through wgpu and assert it is NOT blank — the
         // in-process black-frame regression test, and a check that the wgpu path
