@@ -2208,6 +2208,15 @@ fn human_bytes(n: u64) -> String {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+        self.update_ctx(ctx);
+    }
+}
+
+impl App {
+    /// The whole per-frame render, at `Context` level (eframe's `Frame` arg is
+    /// unused). Split out so `egui_kittest` can drive the real render in a test
+    /// without an `eframe::Frame`. (visual-testing dossier item 2)
+    fn update_ctx(&mut self, ctx: &eframe::egui::Context) {
         use eframe::egui;
         // nxm handoff: pin any links dropped in the inbox (browser download /
         // `concierge nxm <url>` reaching this running instance).
@@ -4578,8 +4587,54 @@ impl App {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::{order_delta_lines, preferred_adapter, sync_bar};
+
+    // A hermetic App showing a Fallout 4 pack: two data mods + F4SE (a promoted
+    // tool, install_root = "game"). No disk/network — manifest + plan seeded
+    // directly, so egui_kittest can drive the real render. (dossier item 2)
+    fn fallout4_app() -> super::App {
+        concierge_games::register();
+        let toml = concat!(
+            "[game]\n",
+            "kind = \"fallout4\"\n",
+            "pristine = \"/tmp/cg-kittest\"\n",
+            "instance = \"/tmp/cg-kittest/inst\"\n",
+            "version = \"1.10.163\"\n",
+            "[game.paths]\n",
+            "plugins_txt = \"/tmp/cg-kittest/plugins.txt\"\n",
+            "my_games = \"/tmp/cg-kittest/mg\"\n\n",
+            "[[mod]]\nname = \"alpha-textures\"\nversion = \"1.0\"\nnexus_mod_id = 111\nfile = \"alpha.zip\"\n\n",
+            "[[mod]]\nname = \"F4SE\"\nversion = \"0.6.23\"\ninstall_root = \"game\"\nurl = \"https://example.invalid/f4se.7z\"\nfile = \"f4se.7z\"\n\n",
+            "[[mod]]\nname = \"bravo-textures\"\nversion = \"1.0\"\nnexus_mod_id = 222\nfile = \"bravo.zip\"\n",
+        );
+        let manifest = concierge::manifest::Manifest::parse(toml).expect("fixture manifest parses");
+        let plan = concierge::plan::eval(&manifest).expect("fixture plan evals");
+        let mut app = super::App::new();
+        app.manifest = Some(manifest);
+        app.plan = Some(plan);
+        app
+    }
+
+    #[test]
+    fn kittest_renders_the_pack_through_the_real_egui_tree() {
+        use egui_kittest::kittest::Queryable as _;
+        let app = fallout4_app();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(eframe::egui::vec2(1280.0, 800.0))
+            .build_state(|ctx, a: &mut super::App| a.update_ctx(ctx), app);
+        h.run_steps(6);
+        // egui actually built each mod as a widget — semantic proof the render
+        // happened. A blank/black frame or a dropped row fails HERE, unlike the
+        // text golden which never touches egui.
+        h.get_by_label("alpha-textures");
+        h.get_by_label("bravo-textures");
+        h.get_by_label("F4SE");
+        // …and the Foundational-tools slot heading rendered — proof the promoted
+        // tool is segregated into its own section, not left in the mod list.
+        h.get_by_label_contains("Foundational tools");
+    }
     use eframe::wgpu::Backend;
 
     #[test]
