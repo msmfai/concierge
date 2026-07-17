@@ -2447,8 +2447,50 @@ impl eframe::App for App {
                     if self.add.open {
                         self.add_form(ui);
                     }
+                    // Promoted foundational tools (a script extender installs to
+                    // a game root the adapter names) get their OWN slot, out of
+                    // the ordinary mod list — they aren't mods like anything else.
+                    let promoted_roots: Vec<String> = self
+                        .plan
+                        .as_ref()
+                        .and_then(|p| concierge::game::adapter_for(&p.game.kind).ok())
+                        .map(|a| {
+                            a.promoted_tools()
+                                .into_iter()
+                                .map(|t| t.install_root.to_owned())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let is_tool = |m: &Mod| {
+                        m.install_root
+                            .as_deref()
+                            .is_some_and(|r| promoted_roots.iter().any(|x| x == r))
+                    };
+                    let main_rows: Vec<(usize, Mod)> = mods
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .filter(|(_, m)| !is_tool(m))
+                        .collect();
+                    let tool_rows: Vec<(usize, Mod)> = mods
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .filter(|(_, m)| is_tool(m))
+                        .collect();
                     ui.label("WHAT — the mods in this pack (identity + source):");
-                    self.mod_list(ui, &mods);
+                    self.mod_list(ui, &main_rows, mods.len(), true);
+                    if !tool_rows.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "\u{2699} Foundational tools — installed to the game and launched \
+                                 through, kept out of the load order:",
+                            )
+                            .strong(),
+                        );
+                        self.mod_list(ui, &tool_rows, mods.len(), false);
+                    }
                     // Surface the download reality by the buttons, not buried in
                     // the bottom log (T3.7: 14/30 only found it there).
                     if !mods.is_empty() {
@@ -3050,11 +3092,23 @@ impl App {
     /// The declaration's mod list — editable config (toggle / reorder / remove /
     /// select). Reorder is gated off while a search filter is active, since the
     /// displayed order isn't the real order then (MO2's rule).
-    fn mod_list(&mut self, ui: &mut eframe::egui::Ui, mods: &[Mod]) {
+    /// Render a mod grid. `rows` carries each mod with its ORIGINAL manifest
+    /// index, so the list can be split (main mods vs promoted foundational tools)
+    /// without breaking drag-reorder — the index still points at the right
+    /// manifest entry. `total` is the full manifest length (for the down-bound);
+    /// `reorderable` is false for the tools slot (a game-root tool has no place
+    /// in the load order).
+    fn mod_list(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        rows: &[(usize, Mod)],
+        total: usize,
+        reorderable: bool,
+    ) {
         use eframe::egui;
         let q = self.search.to_lowercase();
         let mutable = self.mutable;
-        let can_reorder = q.is_empty() && mutable;
+        let can_reorder = q.is_empty() && mutable && reorderable;
         egui::ScrollArea::vertical()
             .id_salt("mods")
             .max_height(300.0)
@@ -3069,8 +3123,7 @@ impl App {
                         ui.strong("src");
                         ui.strong("");
                         ui.end_row();
-                        let n = mods.len();
-                        for (i, m) in mods.iter().enumerate() {
+                        for (i, m) in rows.iter().map(|(idx, m)| (*idx, m)) {
                             if !q.is_empty() && !m.name.to_lowercase().contains(&q) {
                                 continue;
                             }
@@ -3128,7 +3181,7 @@ impl App {
                                     &format!("mod_down:{}", m.name),
                                     "↓",
                                     "move down in load order",
-                                    can_reorder && i + 1 < n,
+                                    can_reorder && i + 1 < total,
                                 );
                                 self.row_btn(
                                     ui,
@@ -3140,7 +3193,7 @@ impl App {
                             });
                             ui.end_row();
                         }
-                        if mods.is_empty() {
+                        if rows.is_empty() {
                             ui.label("(no mods — use + add mod)");
                             ui.end_row();
                         }
