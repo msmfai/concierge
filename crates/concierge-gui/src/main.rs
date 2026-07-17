@@ -4587,7 +4587,13 @@ impl App {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::cast_precision_loss,
+    clippy::as_conversions
+)]
 mod tests {
     use super::{order_delta_lines, preferred_adapter, sync_bar};
 
@@ -4634,6 +4640,46 @@ mod tests {
         // …and the Foundational-tools slot heading rendered — proof the promoted
         // tool is segregated into its own section, not left in the mod list.
         h.get_by_label_contains("Foundational tools");
+    }
+
+    #[test]
+    fn kittest_wgpu_frame_actually_paints() {
+        // Render the real frame through wgpu and assert it is NOT blank — the
+        // in-process black-frame regression test, and a check that the wgpu path
+        // renders (Metal locally, llvmpipe/lavapipe in CI). No committed pixel
+        // baseline: cross-platform pixel diffs are brittle, so we assert "it
+        // painted" via grayscale variance instead of an exact image.
+        //
+        // Opt-in via CONCIERGE_WGPU_TESTS so a machine with no usable wgpu adapter
+        // (bare headless CI without lavapipe) never fails on it — CI sets the var
+        // after installing Mesa/lavapipe; it runs there and locally on demand.
+        if std::env::var_os("CONCIERGE_WGPU_TESTS").is_none() {
+            eprintln!("skipping wgpu frame test (set CONCIERGE_WGPU_TESTS=1 to run)");
+            return;
+        }
+        let app = fallout4_app();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(eframe::egui::vec2(1280.0, 800.0))
+            .wgpu()
+            .build_state(|ctx, a: &mut super::App| a.update_ctx(ctx), app);
+        h.run_steps(6);
+        let img = h.render().expect("wgpu render");
+        // stddev of the RGB byte values (skip alpha): a real UI is high-variance,
+        // a black/blank frame is ~0.
+        let vals: Vec<f64> = img
+            .as_raw()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 4 != 3)
+            .map(|(_, b)| f64::from(*b))
+            .collect();
+        let n = vals.len() as f64;
+        let mean = vals.iter().sum::<f64>() / n;
+        let stddev = (vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
+        assert!(
+            stddev > 5.0,
+            "wgpu frame looks blank (grayscale stddev={stddev})"
+        );
     }
     use eframe::wgpu::Backend;
 
