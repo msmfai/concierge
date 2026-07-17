@@ -82,9 +82,11 @@ impl Headless {
         let repo = Repo::discover()?;
         let manifest = concierge::manifest::Manifest::load(&repo.profile)?;
         let kind = manifest.game.kind.clone();
-        // Feeds the GUI's action-gating (UiFacts.is_bethesda); the health
-        // signal itself comes from compute_health.
-        let is_bethesda = matches!(kind.as_str(), "fallout4" | "skyrimse");
+        // Feeds the GUI's action-gating (UiFacts.is_bethesda). "Has a plugin load
+        // order with base masters" — asked of the adapter, not a hardcoded kind
+        // list (which silently excluded Skyrim LE/Oblivion/FO3/NV/Starfield).
+        let is_bethesda =
+            concierge::game::adapter_for(&kind).is_ok_and(|a| a.plugin_bases().is_some());
         let health_issues = if live {
             compute_health(&manifest)
         } else {

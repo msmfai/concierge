@@ -185,6 +185,17 @@ pub trait GameAdapter: Sync {
     fn promoted_tool_for(&self, _top_level: &[String]) -> Option<PromotedTool> {
         None
     }
+    /// Game-specific guidance for the in-profile AI assistant — how THIS game is
+    /// actually modded: the load model, the foundational tools this community
+    /// expects, where mods live, and the common gotchas. Appended to the
+    /// profile's `CLAUDE.md` under a game heading so the assistant reasons from
+    /// real community norms instead of generic advice. Markdown, no top-level
+    /// `#` heading (the provisioner adds one). Default: none — the generic guide
+    /// still ships. This is the "agent context" half of a game's opinion; keep
+    /// it truthful and specific (named tools, real limits), never speculative.
+    fn agent_guide(&self) -> Option<String> {
+        None
+    }
     /// Post-launch (and pre-launch) health for this game: parse the runtime's
     /// script-extender / crash log for what loaded vs failed, plus static
     /// platform-compatibility warnings. `my_games` is `[game.paths].my_games`

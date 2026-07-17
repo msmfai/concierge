@@ -451,8 +451,13 @@ impl Action {
     }
 }
 
+/// True when the game has a rendered plugin load order with base masters — the
+/// real capability behind the Bethesda-style load-order UI (sort/conflicts/plugin
+/// panel). Asked of the game's adapter, not a hardcoded kind list: the old
+/// `matches!(kind, "fallout4" | "skyrimse")` wrongly excluded Skyrim LE, Oblivion,
+/// Fallout 3/NV and Starfield, which are the same family.
 fn is_bethesda(kind: &str) -> bool {
-    matches!(kind, "fallout4" | "skyrimse")
+    concierge::game::adapter_for(kind).is_ok_and(|a| a.plugin_bases().is_some())
 }
 
 const fn mod_source(m: &Mod) -> &'static str {

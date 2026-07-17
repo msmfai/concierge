@@ -59,6 +59,22 @@ pub mod adapter {
         fn steam_app_id(&self) -> Option<u32> {
             self.steam_app
         }
+        fn agent_guide(&self) -> Option<String> {
+            Some(format!(
+                "- **Mods are staged, then merged by an external tool ({tool}).** Concierge copies \
+                 each mod into the tool's input folder (`[game.paths].mods`); it does NOT write the \
+                 game's archives. You then run {tool} to merge them into the game — a two-step \
+                 flow, the same delegation Vortex uses.\n\
+                 - **{tool} is a required external dependency**, like Steam or LOOT. Install it \
+                 separately; Concierge stages and un-stages the inputs but never performs the binary \
+                 repack itself.\n\
+                 - **Order and conflicts are the tool's job**, resolved inside {tool}, not by \
+                 Concierge — author the pack, stage it, then arrange the merge in the tool.\n\
+                 - **Mods live on Nexus ({domain}).**",
+                tool = self.tool,
+                domain = self.domain,
+            ))
+        }
     }
 
     /// Which external tool a merge-tool game delegates to (for docs / the ledger).

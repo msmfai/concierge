@@ -50,6 +50,22 @@ pub fn provision_profile(dir: &Path, kind: &str) -> Result<Vec<String>> {
 /// agent should never have to guess semantics (guessing is how "run
 /// `concierge check` to validate ids" happened).
 fn guide(kind: &str) -> String {
+    let generic = generic_guide(kind);
+    // Append this game's own modding norms, if its adapter offers them, so the
+    // assistant reasons from community reality — not the same generic advice for
+    // every game. Falls back to the generic guide when no adapter is registered
+    // (e.g. a bare unit test) or the game declares no guidance.
+    match crate::game::adapter_for(kind)
+        .ok()
+        .and_then(crate::game::GameAdapter::agent_guide)
+    {
+        Some(game) => format!("{generic}\n## Modding {kind} — community norms\n\n{game}\n"),
+        None => generic,
+    }
+}
+
+/// The game-agnostic guide body — precise command semantics every profile needs.
+fn generic_guide(kind: &str) -> String {
     format!(
         r#"# Concierge agent guide — {kind} profile
 
