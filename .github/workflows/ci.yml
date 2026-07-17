@@ -32,6 +32,14 @@ jobs:
       - name: Install libarchive (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      # Software Vulkan (Mesa lavapipe) so the wgpu render test can paint a frame
+      # headlessly, and opt that test in on Linux (llvmpipe) — the render-path /
+      # black-frame regression check from the visual-testing dossier.
+      - name: Install Mesa/lavapipe (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+          echo "CONCIERGE_WGPU_TESTS=1" >> "$GITHUB_ENV"
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
