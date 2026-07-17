@@ -1852,7 +1852,7 @@ fn run_blocking(
         Action::Reconcile => reconcile_and_deploy(repo, plan),
         Action::SortLoot => {
             let path = repo.profile.join("manifest.toml");
-            let report = concierge_pluginorder::loot::sort(repo, plan)
+            let report = concierge_pluginorder::loadorder::sort(repo, plan)
                 .map_err(|e| concierge::Error::Other(e.to_string()))?;
             let text = std::fs::read_to_string(&path)
                 .map_err(|e| concierge::Error::Other(e.to_string()))?;

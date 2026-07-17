@@ -14,7 +14,7 @@ fn main() {
         println!("expected        = {expected}");
         println!(
             "MATCH: {}",
-            concierge_hash::matches_wabbajack_hash(&bytes, expected)
+            concierge_hash::matches_xxhash64_base64(&bytes, expected)
         );
     }
 }

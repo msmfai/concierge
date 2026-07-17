@@ -1,0 +1,53 @@
+{
+  "$type": "ModList, Wabbajack.Lib",
+  "Name": "Synthetic Sample Pack",
+  "Author": "Concierge Test Fixtures",
+  "Description": "A hand-authored fixture that exercises the modlist schema (Nexus + Http + other sources). Not a real modlist; every id, hash, and URL below is invented.",
+  "GameType": "Fallout4",
+  "Version": "1.0.0",
+  "IsNSFW": false,
+  "Website": "https://example.invalid/synthetic",
+  "Archives": [
+    {
+      "Hash": "c2FtcGxlaGFzaDE=",
+      "Name": "synthetic-mod-alpha.zip",
+      "Size": 1024,
+      "State": { "$type": "NexusDownloader, Wabbajack.Lib", "GameName": "Fallout4", "ModID": 101, "FileID": 2001 }
+    },
+    {
+      "Hash": "c2FtcGxlaGFzaDI=",
+      "Name": "synthetic-mod-bravo.zip",
+      "Size": 2048,
+      "State": { "$type": "NexusDownloader, Wabbajack.Lib", "GameName": "Fallout4", "ModID": 102, "FileID": 2002 }
+    },
+    {
+      "Hash": "c2FtcGxlaGFzaDM=",
+      "Name": "synthetic-mod-charlie.zip",
+      "Size": 3072,
+      "State": { "$type": "NexusDownloader, Wabbajack.Lib", "GameName": "Fallout4", "ModID": 103, "FileID": 2003 }
+    },
+    {
+      "Hash": "c2FtcGxlaGFzaDQ=",
+      "Name": "synthetic-mod-delta.zip",
+      "Size": 4096,
+      "State": { "$type": "NexusDownloader, Wabbajack.Lib", "GameName": "Fallout4", "ModID": 104, "FileID": 2004 }
+    },
+    {
+      "Hash": "c2FtcGxlaGFzaDU=",
+      "Name": "synthetic-http-asset.7z",
+      "Size": 5120,
+      "State": { "$type": "HttpDownloader, Wabbajack.Lib", "Url": "https://example.invalid/files/synthetic-http-asset.7z" }
+    },
+    {
+      "Hash": "c2FtcGxlaGFzaDY=",
+      "Name": "synthetic-manual-asset.rar",
+      "Size": 6144,
+      "State": { "$type": "MegaDownloader, Wabbajack.Lib" }
+    }
+  ],
+  "Directives": [
+    { "$type": "FromArchive, Wabbajack.Lib" },
+    { "$type": "FromArchive, Wabbajack.Lib" },
+    { "$type": "InlineFile, Wabbajack.Lib" }
+  ]
+}

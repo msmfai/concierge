@@ -20,7 +20,7 @@ concierge-pluginorder = { path = "../concierge-pluginorder" }
 concierge-games = { path = "../concierge-games" }
 concierge-override = { path = "../concierge-override" }
 concierge-ba2 = { path = "../concierge-ba2" }
-concierge-wabbajack = { path = "../concierge-wabbajack" }
+concierge-modpack-import = { path = "../concierge-modpack-import" }
 concierge-ai = { path = "../concierge-ai" }
 concierge-db = { path = "../concierge-db" }
 concierge-ui = { path = "../concierge-ui" }

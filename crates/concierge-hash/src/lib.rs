@@ -114,16 +114,17 @@ pub fn xxhash64_seed(input: &[u8], seed: u64) -> u64 {
     h64
 }
 
-/// Wabbajack encodes the digest as base64 of the 8 little-endian bytes.
+/// The xxHash64 digest as base64 of its 8 little-endian bytes — the encoding
+/// modlist archives use for their file hashes.
 #[must_use]
 pub fn xxhash64_base64(input: &[u8]) -> String {
     base64_encode(&xxhash64(input).to_le_bytes())
 }
 
-/// Does `input` hash to the given Wabbajack `Hash` (base64 xxHash64)?
+/// Does `input` hash to the given base64 xxHash64 digest?
 #[must_use]
-pub fn matches_wabbajack_hash(input: &[u8], wabbajack_base64: &str) -> bool {
-    xxhash64_base64(input) == wabbajack_base64.trim()
+pub fn matches_xxhash64_base64(input: &[u8], xxhash64_base64: &str) -> bool {
+    self::xxhash64_base64(input) == xxhash64_base64.trim()
 }
 
 /// Minimal standard base64 encoder (no dependency).

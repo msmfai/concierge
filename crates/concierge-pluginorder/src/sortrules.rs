@@ -1,13 +1,13 @@
-//! Native parser for the CC0 LOOT masterlist (the metadata LOOT itself
-//! consumes). We read only what a load-order sort and dirty/tag surfacing
-//! need: per-plugin `after`/`req`/`group`/`tag`/`dirty`, and the group graph.
-//! Anchors resolve within the cached single-document masterlist; the `<<`
+//! Native parser for the community CC0 sort-rule format (the public masterlist
+//! metadata used across the ecosystem). We read only what a load-order sort and
+//! dirty/tag surfacing need: per-plugin `after`/`req`/`group`/`tag`/`dirty`, and
+//! the group graph. Anchors resolve within the cached single document; the `<<`
 //! merge key appears as an ignored mapping key.
 
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
-pub struct Masterlist {
+pub struct SortRules {
     #[serde(default)]
     pub groups: Vec<GroupDef>,
     #[serde(default)]
@@ -70,7 +70,7 @@ impl StrOr {
     }
 }
 
-impl Masterlist {
+impl SortRules {
     pub fn parse(yaml: &str) -> Result<Self, String> {
         serde_yaml::from_str(yaml).map_err(|e| e.to_string())
     }

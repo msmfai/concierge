@@ -1,9 +1,9 @@
 [package]
-name = "concierge-wabbajack"
+name = "concierge-modpack-import"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Concierge — read-only, user-local importer for the .wabbajack modlist format (interop)."
+description = "Concierge — read-only, user-local read-only, user-local importer for an existing modlist archive (.wabbajack) into a Concierge view (interop)."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

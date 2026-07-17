@@ -100,9 +100,10 @@ impl Repo {
         self.workspace.join("state").join("catalog.sqlite")
     }
 
-    /// Shared LOOT masterlist cache — workspace-global.
-    pub fn loot_dir(&self) -> PathBuf {
-        self.workspace.join("state").join("loot")
+    /// Shared cache of fetched load-order sort rules (community CC0 masterlists) —
+    /// workspace-global.
+    pub fn sortdata_dir(&self) -> PathBuf {
+        self.workspace.join("state").join("sortdata")
     }
 
     // --- per-profile state -------------------------------------------------
