@@ -449,15 +449,6 @@ fn raw(id: &str, label: impl Into<String>, enabled: bool, guard: Option<&str>) -
     }
 }
 
-/// A raw-id Tab (shows selection) — for the game/profile selectors.
-fn raw_tab(id: &str, label: impl Into<String>, selected: bool) -> Transition {
-    Transition {
-        kind: WidgetKind::Tab,
-        selected,
-        ..raw(id, label, true, None)
-    }
-}
-
 fn hv(mut tr: Transition, hover: &str) -> Transition {
     tr.hover = Some(hover.to_owned());
     tr
@@ -594,20 +585,10 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         named && !f.ai_busy,
         if f.ai_busy { Some(BUSY) } else { name_guard },
     ));
-    for (i, g) in f.games.iter().enumerate() {
-        v.push(raw_tab(
-            &format!("select_game:{i}"),
-            g.clone(),
-            i == f.game_idx,
-        ));
-    }
-    for (i, p) in f.profiles.iter().enumerate() {
-        v.push(raw_tab(
-            &format!("select_profile:{i}"),
-            p.clone(),
-            i == f.profile_idx,
-        ));
-    }
+    // NOTE: game + profile are IDENTITY (which pack am I on) and live in the
+    // top-bar dropdowns; they are deliberately NOT rendered as tabs here. The tab
+    // row is only the Setup/Installed VIEW toggle, so "which pack" and "which
+    // view" stop reading as the same control.
     // per-row buttons for the setup-versions + save-backup lists.
     for ver in &f.versions {
         v.push(raw(
