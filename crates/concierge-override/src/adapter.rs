@@ -87,6 +87,29 @@ impl GameAdapter for Kotor {
         }
         Ok(())
     }
+    fn agent_guide(&self) -> Option<String> {
+        // The community super-patch differs by title — name the right one.
+        let superpatch = if self.kind == "kotor2" {
+            "For KOTOR II install **TSLRCM** (The Sith Lords Restored Content Mod) first, and \
+             **M4-78EP** if you want the restored droid planet — most other K2 mods are built \
+             against them."
+        } else {
+            "For KOTOR I the baseline is the **K1 Community Patch (K1CP)** — install it first; many \
+             mods assume it."
+        };
+        Some(format!(
+            "- **Install via TSLPatcher/HoloPatcher — Concierge does the merge.** Most KOTOR mods \
+             ship a `tslpatchdata/changes.ini` (field-level 2DA/TLK/GFF edits). Concierge applies \
+             each as a diff into the instance's `Override/` against the base, so you never run the \
+             patcher by hand and the pristine game is never touched.\n\
+             - **The community super-patch comes first.** {superpatch}\n\
+             - **Override precedence:** a loose file in `Override/` beats the game's archives; when \
+             two mods provide the same file, later-installed wins. TSLPatcher 2DA/TLK merges STACK \
+             rather than clobber — that's why order-sensitive mods ship as patchers.\n\
+             - **Mods live on Nexus and Deadly Stream** (the KOTOR hub). Essentials like TSLRCM and \
+             M4-78EP are Deadly Stream releases — add them by URL."
+        ))
+    }
 }
 
 pub static KOTOR2: Kotor = Kotor {

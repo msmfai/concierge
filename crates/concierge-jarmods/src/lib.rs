@@ -45,6 +45,24 @@ pub mod adapter {
         fn launch_candidates(&self) -> &'static [&'static str] {
             &[] // launched via the Minecraft launcher/Prism, not an exe we own
         }
+        fn agent_guide(&self) -> Option<String> {
+            Some(
+                "- **The mod loader is the foundation, and it lives in the launcher — not the \
+                 pack.** Every jar targets a loader (Fabric / Forge / NeoForge / Quilt) AND a game \
+                 version. Set both in `[compat]` (`loader`, `game_version`); Concierge resolves each \
+                 Modrinth mod to the build matching them. A mismatch means the jar silently fails to \
+                 load or the game won't start.\n\
+                 - **Mods are jars under `mods/`, no load order** — the loader resolves \
+                 dependencies. Fabric mods usually also need **Fabric API**; Quilt needs **QSL** — \
+                 include the API mod for the loader you chose.\n\
+                 - **The catalog is Modrinth** (open, no key): `concierge browse` and `concierge \
+                 modrinth <slug>` resolve free CDN downloads. CurseForge is the other major host and \
+                 needs its own flow.\n\
+                 - **Keep every mod on one game version.** A pack mixing e.g. 1.20.1 and 1.21 jars \
+                 will crash on load — hold every mod to the `[compat].game_version`."
+                    .to_owned(),
+            )
+        }
     }
 
     pub static MINECRAFT: Minecraft = Minecraft;

@@ -30,8 +30,10 @@ pub struct ScriptExtender {
 }
 
 /// Shared shape for Creation/Gamebryo-engine games. A leaf crate specializes it
-/// entirely through data — no code — which is why one family serves Skyrim
-/// SE/LE/VR, Fallout 3/NV/4/76, Oblivion, Starfield, and Morrowind.
+/// entirely through data — no code. The leaves that exist today: Fallout 4,
+/// Skyrim SE, Skyrim (LE), Oblivion, Fallout 3, Fallout New Vegas, Starfield.
+/// (Morrowind and Fallout 76 are currently served as generic loose-drops by
+/// `concierge-filedrop`, not this family — see that crate's agent guides.)
 #[derive(Debug)]
 pub struct Bethesda {
     /// The script extender this title promotes, if any (`None` = a title with no
@@ -164,6 +166,37 @@ impl GameAdapter for Bethesda {
             .any(|f| f.eq_ignore_ascii_case(se.loader))
             .then(|| self.promoted_tools().into_iter().next())
             .flatten()
+    }
+    fn agent_guide(&self) -> Option<String> {
+        let (se_name, se_home) = self
+            .script_extender
+            .map_or(("a script extender", ""), |s| (s.name, s.home));
+        let base = self
+            .base_masters
+            .first()
+            .copied()
+            .unwrap_or("the base master");
+        Some(format!(
+            "- **Load order is the whole game.** Plugins (`.esp`/`.esm`/`.esl`) load in order and \
+             later entries win; a plugin whose master is missing or loads below it crashes on \
+             launch. `concierge sort --apply` applies LOOT rules; `concierge realize` refuses on \
+             missing masters. Mind the 254 full-plugin limit (`.esl`-flagged plugins don't count).\n\
+             - **{se_name} is foundational, not a mod like the others.** Many script-based mods \
+             require it. It is a *promoted tool*: it installs to the game root and the game \
+             launches through it — add its archive and Concierge routes it there automatically \
+             (never `install_root = \"data\"`). Get it from {se_home}. Its DLL plugins usually \
+             also need Address Library.\n\
+             - **Base masters lead the order.** {base} and its DLC load first even with an empty \
+             pack; declare a non-default DLC set in `[game].dlc`.\n\
+             - **Loose files need archive invalidation.** If the pack ships loose textures/meshes, \
+             set `bInvalidateOlderFiles = 1` under an `[Archive]` section of `[ini]`, or the game \
+             ignores them in favour of the packed BSAs.\n\
+             - **Mods live on Nexus ({domain}).** FOMOD installer choices are recorded in the pack \
+             and replayed on every install — don't re-run the wizard by hand.\n\
+             - **Platform gotcha:** crash loggers like Buffout 4 self-disable under Wine/CrossOver \
+             (they read the game version as 0) — expect an 'incompatible' popup there.",
+            domain = self.domain,
+        ))
     }
     fn lints(&self, plan: &concierge::plan::Plan) -> Result<Vec<concierge::lint::Violation>> {
         // The Bethesda plugin invariants — missing masters, the 254 full-plugin

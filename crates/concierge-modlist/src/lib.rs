@@ -64,6 +64,23 @@ pub mod adapter {
         fn steam_app_id(&self) -> Option<u32> {
             Some(294_100)
         }
+        fn agent_guide(&self) -> Option<String> {
+            Some(
+                "- **Load order is authored in `ModsConfig.xml`** (package ids, in order). Core \
+                 (`ludeon.rimworld`) loads first, then owned DLC, then mods; a mod that loads before \
+                 its dependency throws errors. `concierge sort` orders them.\n\
+                 - **Harmony is the near-universal dependency.** Most C# mods patch the game through \
+                 Harmony (`brrainz.harmony`) — install it and load it right after Core. It installs \
+                 like any other mod (a folder under `Mods/`); it just has to come early.\n\
+                 - **DLC are package ids too:** `ludeon.rimworld.royalty`, `.ideology`, `.biotech`, \
+                 `.anomaly` load between Core and mods when owned.\n\
+                 - **Two catalogs.** Steam Workshop hosts most RimWorld mods; Nexus (rimworld) is \
+                 the DRM-free mirror. Prefer whichever the pack can fetch.\n\
+                 - **XML mods stack (later-wins on defs/textures); C# mods patch.** Order matters \
+                 most for patch mods — keep frameworks (Harmony, HugsLib) high and content low."
+                    .to_owned(),
+            )
+        }
     }
 
     pub static RIMWORLD: RimWorld = RimWorld;

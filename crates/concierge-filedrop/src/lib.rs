@@ -53,6 +53,154 @@ pub mod adapter {
         fn steam_app_id(&self) -> Option<u32> {
             self.steam_app
         }
+        // A long but flat data table: one match arm of prose per game/family.
+        #[allow(clippy::too_many_lines)]
+        fn agent_guide(&self) -> Option<String> {
+            // Loose-drop covers wildly different scenes; each names the tools and
+            // layout ITS community actually uses. Games without a specific note
+            // fall through to the generic guide (None). Frameworks that live at
+            // the game root (RED4ext, UE4SS, REFramework, …) install with
+            // `install_root = "game"`, not the default content folder.
+            let g: &str = match self.kind_name {
+                "cyberpunk2077" => {
+                    "- **Mods layer on frameworks that live in different folders.** The stack: \
+                     **RED4ext** (native plugins), **Cyber Engine Tweaks / CET** (Lua), \
+                     **redscript** (`r6/scripts`), then **ArchiveXL + TweakXL + Codeware**. Game \
+                     content `.archive` files go in `archive/pc/mod` (the default `mods` root here).\n\
+                     - **Install the frameworks first, to the game root** (`install_root = \"game\"`) \
+                     — they deploy under the game dir, not `archive/pc/mod`. Content archives use the \
+                     default.\n\
+                     - **Everything must match the game patch** — a CET/RED4ext built for an older \
+                     version silently fails after an update.\n\
+                     - **Mods live on Nexus (cyberpunk2077).**"
+                }
+                "eldenring" => {
+                    "- **Mod through Mod Engine 2 — never touch the game files.** ME2 loads a mod \
+                     folder at launch without modifying the install; run OFFLINE with EAC disabled \
+                     when modded, or risk a ban.\n\
+                     - **Seamless Co-op** is the standard co-op mod (its own launcher + save \
+                     namespace).\n\
+                     - **`regulation.bin` is the conflict hotspot** — most gameplay mods edit it and \
+                     two can't both win without a merge; install one or use a regulation merger.\n\
+                     - **Mods live on Nexus (eldenring).**"
+                }
+                "witcher3" => {
+                    "- **Script conflicts are resolved by Script Merger, not Concierge** — if two \
+                     mods edit the same `.ws` script, run Script Merger to produce \
+                     `Mods/mod0000_MergedFiles`. Concierge deploys the mods; the merge is a manual \
+                     tool step.\n\
+                     - **Two mod types:** `Mods/` (gameplay/scripts) and `dlc/` (content); menu xmls \
+                     need entries in `input.settings`/`user.settings`.\n\
+                     - **Next-gen (4.x) vs classic (1.32)** broke many mods — match each mod to your \
+                     game version.\n\
+                     - **Mods live on Nexus (witcher3).**"
+                }
+                "morrowind" => {
+                    "- **Morrowind is really a plugin-order game, but Concierge currently deploys it \
+                     as a loose drop into `Data Files` — so it does NOT render the `Morrowind.ini` \
+                     load order for you.** Set `[Game Files]` order in `Morrowind.ini` (or use Wrye \
+                     Mash / mlox) after deploy.\n\
+                     - **Foundational tools:** **MWSE** (script extender, needed by most modern and \
+                     all MWSE-Lua mods) and **MGE XE** (distant land/graphics). **OpenMW** is a full \
+                     engine replacement with its own mod handling — a separate path.\n\
+                     - **Masters lead:** `Morrowind.esm` + `Tribunal.esm`/`Bloodmoon.esm` first; a \
+                     plugin missing its master won't load.\n\
+                     - **Mods live on Nexus (morrowind).**"
+                }
+                "fallout76" => {
+                    "- **Fallout 76 is online — modding is deliberately limited and risky.** No \
+                     script extender; only loose files under `Data` (textures, meshes, sound, UI, \
+                     ini edits). Anything touching gameplay or the economy can get you banned.\n\
+                     - **Keep it cosmetic/QoL** — texture, UI (`.swf`), and sound replacers are the \
+                     accepted category; enable loose files with archive invalidation in the ini.\n\
+                     - **Mods live on Nexus (fallout76).**"
+                }
+                "thesims4" => {
+                    "- **Two mod kinds, different rules.** `.package` files (CC, tuning) go anywhere \
+                     under `Mods/` (up to 5 folders deep). `.ts4script` mods (Python) must sit **at \
+                     most one folder deep** or they won't load, and need 'Script Mods Enabled' in \
+                     game options.\n\
+                     - **Mods live under Documents** (`Electronic Arts/The Sims 4/Mods`), outside the \
+                     game — the pack points `[game.paths].mods` there; `Resource.cfg` controls \
+                     package scanning.\n\
+                     - **After every patch,** delete `localthumbcache.package` and re-check script \
+                     mods — EA patches routinely break them.\n\
+                     - **Mods live on Nexus (thesims4).**"
+                }
+                "dragonage" => {
+                    "- **Two install paths.** `.dazip` mods install through DAUpdater/DAModder into \
+                     the AddIns registry (`addins.xml`); loose override files drop into `override/` \
+                     and win over the game's data.\n\
+                     - **Override precedence is filename-based** — prefix files to control which \
+                     wins.\n\
+                     - **Mods live on Nexus (dragonage).**"
+                }
+                "reddeadredemption2" => {
+                    "- **Lenny's Mod Loader (LML) is the loader** — `lml/` and script/ASI mods load \
+                     through it, alongside **ScriptHookRDR2**. Install both first.\n\
+                     - **Play story mode offline when modded** — RDR Online bans for mods.\n\
+                     - **Mods live on Nexus (reddeadredemption2).**"
+                }
+                "nomanssky" => {
+                    "- **`.pak` mods drop into `GAMEDATA/PCBANKS/MODS`, and you must delete \
+                     `DISABLEMODS.txt`** for the game to read them. Only one mod can edit a given \
+                     game file — conflicts need merging (AMUMSS generates compatible paks).\n\
+                     - **Every update breaks mods** — NMS patches often; rebuild paks against the new \
+                     version.\n\
+                     - **Mods live on Nexus (nomanssky).**"
+                }
+                "mountandblade2bannerlord" => {
+                    "- **Mods are Modules under `Modules/`, ordered in the launcher.** The framework \
+                     stack most mods need, in load order: **Harmony**, **ButterLib**, \
+                     **UIExtenderEx**, **MCM** — install and load these first.\n\
+                     - **Load order matters** (dependencies before dependents); the official launcher \
+                     persists it.\n\
+                     - **Mods live on Nexus (mountandblade2bannerlord) and Steam Workshop.**"
+                }
+                "7daystodie" => {
+                    "- **Each mod is a folder under `Mods/` with a `ModInfo.xml`.** Pure-XML (XPath) \
+                     mods stack safely; DLL/Harmony mods need EAC disabled to load.\n\
+                     - **Match the game version** (Alpha vs 1.0) — 7DTD mods break hard across major \
+                     versions.\n\
+                     - **Mods live on Nexus (7daystodie) and the official forums.**"
+                }
+                "oblivionremastered" => {
+                    "- **A UE5 remaster over the original Gamebryo engine — two mod flavours.** UE \
+                     `.pak` mods drop into `~mods` (the default here); classic-engine plugins/loose \
+                     files go under the bundled `Data` with archive invalidation. **UE4SS** \
+                     (Lua/Blueprint) and **OBSE64** (engine-side scripts) are the foundational \
+                     tools.\n\
+                     - **Install frameworks to the game root** (`install_root = \"game\"`); pak \
+                     content uses the default.\n\
+                     - **Mods live on Nexus (oblivionremastered).**"
+                }
+                "residentevil42023" | "devilmaycry5" | "monsterhunterrise" | "monsterhunterwilds"
+                | "streetfighter6" => {
+                    "- **REFramework is the mod foundation** for this RE Engine title — a \
+                     `dinput8.dll` loader at the game root that hosts Lua scripts \
+                     (`reframework/autorun`) and enables `.pak` mods. Install it first, to the game \
+                     root (`install_root = \"game\"`).\n\
+                     - **Fluffy Mod Manager** is the community-standard tool; mods are `.pak`s and \
+                     `natives/` overrides.\n\
+                     - **Match the game version** — RE Engine updates routinely break REFramework and \
+                     its scripts.\n\
+                     - **Mods live on Nexus.**"
+                }
+                "palworld" | "readyornot" | "acecombat7skiesunknown" | "marvelrivals"
+                | "stellarblade" => {
+                    "- **Unreal Engine `.pak` mods** drop into the `~mods` folder (the default here) \
+                     and load by name — a later pak wins on shared assets. For script/Lua/Blueprint \
+                     mods, **UE4SS** (a `dwmapi.dll`/`xinput` loader in the game's binaries folder) \
+                     is the foundation — install it to the game root (`install_root = \"game\"`) \
+                     first.\n\
+                     - **Anti-cheat/online caution:** several of these are live-service — run modded \
+                     content offline/solo where allowed; online play will reject modified paks.\n\
+                     - **Mods live on Nexus.**"
+                }
+                _ => return None,
+            };
+            Some(g.to_owned())
+        }
     }
 
     // Each game: a const roots slice (the mod folder is the only real datum) +

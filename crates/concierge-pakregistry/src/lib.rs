@@ -9,7 +9,7 @@ pub mod adapter {
     use std::path::PathBuf;
 
     use concierge::error::{Error, Result};
-    use concierge::game::{GameAdapter, Lexicon, RootTarget, BG3_LEXICON};
+    use concierge::game::{GameAdapter, Lexicon, PromotedTool, RootTarget, BG3_LEXICON};
     use concierge::manifest::Manifest;
     use concierge::plan::{ConfigFile, GENERATED_BANNER};
 
@@ -240,6 +240,35 @@ pub mod adapter {
         }
         fn steam_app_id(&self) -> Option<u32> {
             Some(1_086_940)
+        }
+        fn promoted_tools(&self) -> Vec<PromotedTool> {
+            vec![PromotedTool {
+                id: "bg3se",
+                name: "BG3 Script Extender",
+                blurb:
+                    "The scripting runtime many gameplay mods require; installs into the game's \
+                        bin/ (the game root) as a loader the game launches through — not a .pak in \
+                        the mod list.",
+                home: "https://github.com/Norbyte/bg3se/releases",
+                install_root: "game",
+            }]
+        }
+        fn agent_guide(&self) -> Option<String> {
+            Some(
+                "- **Mods are `.pak` archives, activated by UUID in `modsettings.lsx`** — not loose \
+                 files. Concierge renders `modsettings.lsx` from each pak's `meta.lsx` (module UUID \
+                 + name) in load order; a pak that's present but not registered does nothing.\n\
+                 - **BG3 Script Extender (BG3SE) is the scripting foundation.** Many gameplay mods \
+                 need it. It's a *promoted tool*: it installs into the game's `bin/` (the game \
+                 root) as a DLL loader the game launches through — add it with `install_root = \
+                 \"game\"`, not as a `.pak`. Get it from the Norbyte releases.\n\
+                 - **Load order matters for overrides** — later paks win on shared files/stats, and \
+                 dependencies (Mod Configuration Menu, the Script Extender) must load first.\n\
+                 - **Two catalogs:** Nexus (baldursgate3) hosts `.pak` mods Concierge installs; \
+                 Larian's in-game **mod.io** manager hosts others that load in-game. Prefer Nexus \
+                 paks for a reproducible pack."
+                    .to_owned(),
+            )
         }
     }
 
