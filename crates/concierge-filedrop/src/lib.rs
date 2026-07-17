@@ -186,6 +186,51 @@ pub mod adapter {
                      its scripts.\n\
                      - **Mods live on Nexus.**"
                 }
+                "monsterhunterworld" => {
+                    "- **Mods drop into `nativePC`** (mirroring the game's internal layout); the \
+                     game reads them over its own chunks. Some tools/mods need **Stracker's \
+                     Loader** to load native code.\n\
+                     - **Match the game version** — Iceborne and title updates change chunk formats \
+                     and break mods.\n\
+                     - **Mods live on Nexus (monsterhunterworld).**"
+                }
+                "kingdomcomedeliverance2" => {
+                    "- **Each mod is a folder under `Mods/` with a `mod.manifest`**, ordered by a \
+                     `mod_order.txt` the launcher writes — later entries win on conflicting `.pak` \
+                     data.\n\
+                     - **Match the game version** — patches routinely invalidate `.pak` mods.\n\
+                     - **Mods live on Nexus (kingdomcomedeliverance2).**"
+                }
+                "bladeandsorcery" => {
+                    "- **Mods are folders under `StreamingAssets/Mods`**, loaded by the game's \
+                     in-game Mod Manager; U12+ changed the mod format, so match every mod to your \
+                     game version or it won't load.\n\
+                     - **Two catalogs:** Nexus (bladeandsorcery) and Thunderstore; many mods depend \
+                     on a shared framework mod — install those first.\n\
+                     - **Mods live on Nexus (bladeandsorcery).**"
+                }
+                "bladeandsorcerynomad" => {
+                    "- **Nomad is the standalone Quest build** — mods are the Nomad-specific \
+                     versions (never the PC ones), sideloaded onto the headset. The pack points \
+                     `[game.paths].mods` at the mounted/adb `Mods` folder.\n\
+                     - **Match the game version and use Nomad builds only** — PC mods crash on \
+                     Quest.\n\
+                     - **Mods live on Nexus (bladeandsorcery, the Nomad section).**"
+                }
+                "mysummercar" => {
+                    "- **MSCLoader is the mod loader** — install it first; mods are `.dll` files \
+                     under `Mods/` that it loads at runtime.\n\
+                     - **Match the loader and game build** — My Summer Car updates and MSCLoader \
+                     versions must line up.\n\
+                     - **Mods live on Nexus (mysummercar) and the community forums.**"
+                }
+                "helldivers2" => {
+                    "- **Modding is limited and anti-cheat-bounded.** Mods are patched game archives \
+                     under `data`; keep them cosmetic (audio, textures, UI) — gameplay edits risk a \
+                     ban and won't survive matchmaking.\n\
+                     - **Every patch rebuilds the archives** — mods usually break on each update.\n\
+                     - **Mods live on Nexus (helldivers2).**"
+                }
                 "palworld" | "readyornot" | "acecombat7skiesunknown" | "marvelrivals"
                 | "stellarblade" => {
                     "- **Unreal Engine `.pak` mods** drop into the `~mods` folder (the default here) \
@@ -560,6 +605,12 @@ pub mod adapter {
                     "{kind}: has a mods root"
                 );
                 assert_eq!(a.default_install_root(), "mods");
+                // Every loose-drop game speaks its own modding norms — none falls
+                // through to the generic guide.
+                assert!(
+                    a.agent_guide().is_some(),
+                    "{kind}: has a game-specific agent guide"
+                );
             }
         }
 
