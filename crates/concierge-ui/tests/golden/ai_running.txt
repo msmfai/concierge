@@ -33,9 +33,6 @@ TRANSITIONS:
   create_empty     empty                    [guarded: name the profile first]
   create_clone     clone active             [guarded: name the profile first]
   new_modpack_ai   new modpack (AI)         [guarded: an action is running]
- *select_game:0    skyrimse                 [enabled]
-  select_game:1    fallout4                 [enabled]
- *select_profile:0 modpack                  [enabled]
   open_settings    Settings                 [enabled]  -> Settings
   open_preview     Preview                  [enabled]  -> PreviewChanges
   open_browse      🔎 browse                 [enabled]  -> Browse
