@@ -745,6 +745,9 @@ fn place(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+// On non-Unix targets the body collapses to `false` (no inode identity), which
+// clippy's nursery would flag as const-able — but it can't be const on Unix.
+#[allow(clippy::missing_const_for_fn)]
 fn same_inode(a: &Path, b: &Path) -> bool {
     #[cfg(unix)]
     {
