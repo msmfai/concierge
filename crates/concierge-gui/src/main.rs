@@ -2733,113 +2733,124 @@ impl App {
         let done = [has_game, has_profile, has_mods, is_realized];
         let current = done.iter().position(|d| !d).unwrap_or(usize::MAX);
 
-        let mut open = true;
-        egui::Window::new("How to use Concierge")
-            .open(&mut open)
-            .collapsible(false)
-            .default_width(560.0)
-            .default_height(600.0)
-            .scroll([false, true])
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(
+        // A SEPARATE OS window (its own egui viewport), not an in-app window —
+        // it floats independently and gets its own title bar / close button.
+        let mut close = false;
+        ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("concierge-quickstart"),
+            egui::ViewportBuilder::default()
+                .with_title("How to use Concierge")
+                .with_inner_size([580.0, 660.0]),
+            |ctx, _class| {
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    close = true;
+                }
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.label(
                     "Concierge builds a modded COPY of your game from a text modpack — your \
                      original install is never touched.",
                 );
-                ui.add_space(8.0);
+                        ui.add_space(8.0);
 
-                ui.heading("The flow");
-                let step = |ui: &mut egui::Ui, i: usize, done: bool, title: &str, detail: &str| {
-                    let (mark, col) = if done {
-                        ("\u{2714}", egui::Color32::from_rgb(120, 200, 140))
-                    } else if current == i {
-                        ("\u{25B6}", egui::Color32::from_rgb(120, 180, 240))
-                    } else {
-                        ("\u{2022}", ui.visuals().weak_text_color())
-                    };
-                    ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(col, format!("{mark}  {}. {title}", i + 1));
-                        ui.weak(format!("— {detail}"));
-                    });
-                };
-                step(
-                    ui,
-                    0,
-                    has_game,
-                    "Add your game",
-                    "the game you want to mod — “+ add game” at the top",
-                );
-                step(
-                    ui,
-                    1,
-                    has_profile,
-                    "Create a modpack",
-                    "a named profile of mods for that game — “new profile”",
-                );
-                step(
+                        ui.heading("The flow");
+                        let step =
+                            |ui: &mut egui::Ui, i: usize, done: bool, title: &str, detail: &str| {
+                                let (mark, col) = if done {
+                                    ("\u{2714}", egui::Color32::from_rgb(120, 200, 140))
+                                } else if current == i {
+                                    ("\u{25B6}", egui::Color32::from_rgb(120, 180, 240))
+                                } else {
+                                    ("\u{2022}", ui.visuals().weak_text_color())
+                                };
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.colored_label(col, format!("{mark}  {}. {title}", i + 1));
+                                    ui.weak(format!("— {detail}"));
+                                });
+                            };
+                        step(
+                            ui,
+                            0,
+                            has_game,
+                            "Add your game",
+                            "the game you want to mod — “+ add game” at the top",
+                        );
+                        step(
+                            ui,
+                            1,
+                            has_profile,
+                            "Create a modpack",
+                            "a named profile of mods for that game — “new profile”",
+                        );
+                        step(
                     ui,
                     2,
                     has_mods,
                     "Add mods",
                     "“browse” the catalog or “+ add mod” with a link — they go into your Setup",
                 );
-                step(
-                    ui,
-                    3,
-                    is_realized,
-                    "Apply",
-                    "installs your Setup into a private copy of the game",
-                );
-                step(ui, 4, false, "Play", "launch the modded game");
+                        step(
+                            ui,
+                            3,
+                            is_realized,
+                            "Apply",
+                            "installs your Setup into a private copy of the game",
+                        );
+                        step(ui, 4, false, "Play", "launch the modded game");
 
-                ui.add_space(10.0);
-                ui.heading("Setup vs Installed");
-                ui.label("• Setup — the mods you WANT. Editable; this is your plan.");
-                ui.label(
+                        ui.add_space(10.0);
+                        ui.heading("Setup vs Installed");
+                        ui.label("• Setup — the mods you WANT. Editable; this is your plan.");
+                        ui.label(
                     "• Installed — what's actually DEPLOYED to the game right now. Read-only.",
                 );
-                ui.weak(
+                        ui.weak(
                     "They match only after you Apply. Before that, Installed is empty — which is \
                      why the two tabs can look the same at first.",
                 );
 
-                ui.add_space(10.0);
-                ui.heading("Key features");
-                ui.label("• Browse — search the mod catalog and add with one click.");
-                ui.label(
+                        ui.add_space(10.0);
+                        ui.heading("Key features");
+                        ui.label("• Browse — search the mod catalog and add with one click.");
+                        ui.label(
                     "• Preview — see exactly what an Apply would change (files, conflicts, load \
                      order) before it happens.",
                 );
-                ui.label(
+                        ui.label(
                     "• Sort load order / Conflicts — resolve mod ordering and file overwrites.",
                 );
-                ui.label(
+                        ui.label(
                     "• Foundational tools — a game's script extender (SKSE/F4SE/…) installs to the \
                      game root and launches through automatically; it sits in its own slot.",
                 );
-                ui.label("• Verify — confirm your original game files are untouched.");
-                ui.label(
+                        ui.label("• Verify — confirm your original game files are untouched.");
+                        ui.label(
                     "• Undo / roll back — every change is reversible; Uninstall removes everything \
                      Concierge placed.",
                 );
 
-                ui.add_space(10.0);
-                ui.heading("The agent terminal");
-                ui.label(
+                        ui.add_space(10.0);
+                        ui.heading("The agent terminal");
+                        ui.label(
                     "The right-hand panel is a shell sandboxed to Concierge — it can only touch \
                      this modpack, never your machine. Run `claude` or `codex` in it to have an AI \
                      assistant build and maintain the pack; everything it does lands in the same \
                      modpack file you can see and edit.",
                 );
 
-                ui.add_space(10.0);
-                ui.separator();
-                ui.weak(
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.weak(
                     "Nothing is installed until you Apply. Re-open this guide any time with \
                      “Quick start” up top.",
                 );
-            });
-        self.quickstart_open = open;
+                    });
+                });
+            },
+        );
+        if close {
+            self.quickstart_open = false;
+        }
     }
 
     /// Top bar — projected from the Screen: game/profile selectors (selection
