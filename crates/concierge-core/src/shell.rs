@@ -232,6 +232,9 @@ fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
 /// sandbox bootstrap prints the MOTD and confines the process, so here we just
 /// drop into an interactive prompt (the user's PowerShell profile still loads).
 #[cfg(windows)]
+// Mirrors the non-Windows signature (which isn't const), so allow the nursery
+// lint rather than split the callers on constness.
+#[allow(clippy::missing_const_for_fn)]
 fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
     // An empty program means "become the interactive guarded shell": the Windows
     // bootstrap lowers THIS PowerShell session to Low integrity and -NoExit keeps
