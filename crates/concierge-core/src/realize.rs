@@ -983,9 +983,8 @@ fn prune_empty_dirs(base: &Path) {
 mod tests {
     use super::WantSet;
     use super::{
-        force_remove_dir_all, mount_park, mount_path, prune_empty_dirs,
-        reject_broken_symlink_ancestor, resolve_root_path, set_read_only, unmount_path,
-        write_configs,
+        force_remove_dir_all, mount_park, mount_path, prune_empty_dirs, resolve_root_path,
+        set_read_only, unmount_path, write_configs,
     };
     use crate::plan::{ConfigFile, ResolvedRoot};
     use std::path::PathBuf;
@@ -1046,6 +1045,7 @@ mod tests {
     #[test]
     #[cfg(unix)] // exercises a POSIX symlink; the guard itself is cross-platform
     fn broken_symlink_instance_gives_a_clear_error() {
+        use super::reject_broken_symlink_ancestor;
         let base = std::env::temp_dir().join(format!("cg-brokenlink-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
