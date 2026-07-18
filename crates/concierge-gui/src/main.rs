@@ -3122,55 +3122,81 @@ impl App {
         }
     }
 
-    /// Start (or focus) the sandboxed shell for the ACTIVE profile: `concierge
-    /// shell` in the profile dir, inside the OS sandbox. It greets with an MOTD
-    /// explaining the sandbox and that you can run `claude`/`codex` in it — a
-    /// custom shell, not an auto-launched agent, so the user picks their tool.
+    /// Start (or focus) the sandboxed shell for the ACTIVE profile. The sandbox
+    /// command is built IN-PROCESS (the GUI links concierge-core) and spawned
+    /// DIRECTLY in the terminal — no `concierge.exe` subprocess. That matters on
+    /// Windows: an unsigned helper exe spawned programmatically gets silently
+    /// blocked by Defender/SmartScreen, whereas the direct child is the
+    /// Microsoft-signed `powershell.exe` (or `sandbox-exec`/`bwrap` elsewhere).
     fn start_agent_terminal(&mut self) {
         let Some(dir) = self.profiles.get(self.profile_idx).map(|p| p.dir.clone()) else {
             self.log.push("no active profile for the agent".to_owned());
             return;
         };
-        // The CLI ships next to the GUI. On Windows it's `concierge.exe`, so use
-        // the platform exe suffix — joining a bare "concierge" never exists there,
-        // which silently fell back to a bare name that isn't on PATH (the release
-        // is just unzipped), so the shell "did nothing".
-        let exe = format!("concierge{}", std::env::consts::EXE_SUFFIX);
-        let beside = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join(&exe)));
-        diag::log(&format!(
-            "start_agent_terminal: profile={} · looking for {exe} beside exe: {}",
-            dir.display(),
-            beside.as_ref().map_or_else(
-                || "<no exe dir>".to_owned(),
-                |p| format!("{} (exists={})", p.display(), p.exists())
-            ),
-        ));
-        let concierge = beside
-            .filter(|p| p.exists())
-            .map_or(exe, |p| p.display().to_string());
-        let cmd = vec![concierge, "shell".into()];
-        // One self-contained, greppable folder per open — trace.log (gui + cli +
-        // bootstrap), the terminal transcript, and the exact sandbox script.
-        // Setting CONCIERGE_LOG_DIR routes core::diag here for this process AND
-        // the spawned CLI + bootstrap inherit it.
+        // One self-contained, greppable folder per open — trace.log (gui +
+        // bootstrap), the terminal transcript, the exact sandbox script.
         let session = diag::new_session();
         std::env::set_var("CONCIERGE_LOG_DIR", &session);
-        diag::log(&format!("opening shell session: {}", session.display()));
+        diag::log(&format!(
+            "start_agent_terminal: profile={} · session={}",
+            dir.display(),
+            session.display()
+        ));
+
+        // Build the sandbox command from the plan, in-process.
+        let (Some(repo), Some(plan)) = (self.active_repo(), self.plan.clone()) else {
+            let msg = "no plan/repo for the active profile — set the game install folder first";
+            diag::log(msg);
+            self.error = Some(msg.to_owned());
+            return;
+        };
+        let built = concierge::shell::shell_command(&repo, &plan, None, false, &[], &[]);
+        let cmd_ref = match &built {
+            Ok(c) => c,
+            Err(e) => {
+                concierge::diag::event("gui", "error", &format!("shell_command failed: {e}"));
+                diag::log(&format!("shell_command failed: {e}"));
+                self.error = Some(format!("Couldn't build the sandboxed shell: {e}"));
+                return;
+            }
+        };
+        // Extract argv / cwd / env from the built Command to feed the PTY.
+        let program: Vec<String> = std::iter::once(cmd_ref.get_program())
+            .chain(cmd_ref.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let cwd = cmd_ref
+            .get_current_dir()
+            .map_or_else(|| dir.clone(), std::path::Path::to_path_buf);
+        let mut env: Vec<(String, String)> = cmd_ref
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        env.push((
+            "CONCIERGE_LOG_DIR".to_owned(),
+            session.display().to_string(),
+        ));
+
+        diag::log(&format!(
+            "spawning directly: {program:?} · cwd={}",
+            cwd.display()
+        ));
         concierge::diag::event(
             "gui",
             "open",
-            &format!("profile={} · cmd={cmd:?}", dir.display()),
+            &format!(
+                "direct spawn: {} · cwd={}",
+                program.join(" "),
+                cwd.display()
+            ),
         );
         let transcript = session.join("terminal.raw");
-        // Pass the session dir explicitly too, so the CLI inherits it regardless
-        // of how the PTY seeds the child environment.
-        let env = vec![(
-            "CONCIERGE_LOG_DIR".to_owned(),
-            session.display().to_string(),
-        )];
-        match terminal::PtyTerminal::spawn(&cmd, &dir, &env, 40, 100, Some(transcript)) {
+        match terminal::PtyTerminal::spawn(&program, &cwd, &env, 40, 100, Some(transcript)) {
             Ok(t) => {
                 concierge::diag::event("gui", "spawned", "PTY spawn OK");
                 diag::log("agent terminal spawned OK");
@@ -4946,6 +4972,51 @@ mod tests {
         app.plan = Some(plan);
         app.quickstart_open = false; // a configured pack, not first-run
         app
+    }
+
+    // The agent terminal now builds the sandbox command in-process and spawns it
+    // DIRECTLY (no concierge.exe subprocess). Verify the argv/env extraction that
+    // feeds the PTY yields a runnable sandbox launcher carrying the MOTD — the
+    // exact path start_agent_terminal takes.
+    #[test]
+    fn direct_spawn_extracts_a_runnable_sandbox_command() {
+        concierge_games::register();
+        let base = std::env::temp_dir().join(format!("cg-gui-shell-{}", std::process::id()));
+        let profile = base.join("games/fallout4/profiles/default");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(base.join(".concierge-workspace"), "").unwrap();
+        let toml = concat!(
+            "[game]\nkind = \"fallout4\"\npristine = \"/tmp/cg-x\"\nversion = \"1\"\n",
+            "[game.paths]\nplugins_txt = \"/tmp/cg-x/p.txt\"\nmy_games = \"/tmp/cg-x/mg\"\n",
+        );
+        let manifest = concierge::manifest::Manifest::parse(toml).unwrap();
+        let plan = concierge::plan::eval(&manifest).unwrap();
+        let repo = concierge::repo::Repo::at(&profile);
+        let c = concierge::shell::shell_command(&repo, &plan, None, false, &[], &[]).unwrap();
+        let program: Vec<String> = std::iter::once(c.get_program())
+            .chain(c.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let env: Vec<(String, String)> = c
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        assert!(
+            program.first().is_some_and(|p| p.contains("sandbox-exec")
+                || p.contains("bwrap")
+                || p.to_lowercase().contains("powershell")),
+            "leads with the OS sandbox launcher: {program:?}"
+        );
+        assert!(
+            env.iter().any(|(k, _)| k == "CONCIERGE_MOTD"),
+            "the MOTD env is carried to the PTY: {env:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
