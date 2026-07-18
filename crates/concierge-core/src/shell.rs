@@ -138,27 +138,92 @@ pub fn shell_command(
     })?;
     let repo = &Repo::at(&profile);
     let ws = write_set(repo, plan, extra_allow);
+    let mut extra_env: Vec<(String, String)> = Vec::new();
     let program: Vec<String> = if !cmd.is_empty() {
         cmd.to_vec()
     } else if let Some(a) = agent {
         vec![a.to_owned()]
     } else {
-        // A custom sandboxed shell: print the MOTD (what the sandbox is + that you
-        // can run claude/codex here), then hand off to the user's interactive
-        // shell. `$CONCIERGE_MOTD` is set on the command below.
-        let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
-        vec![
-            "/bin/sh".to_owned(),
-            "-c".to_owned(),
-            format!("printf '%s\\n' \"$CONCIERGE_MOTD\"; exec {sh} -i"),
-        ]
+        let (prog, env) = interactive_shell();
+        extra_env = env;
+        prog
     };
     let mut c = sandboxed(&ws, offline, &program)?;
     c.current_dir(&repo.profile)
         .env("CONCIERGE_REPO", &repo.profile)
         .env("CONCIERGE_SANDBOX", "1")
         .env("CONCIERGE_MOTD", sandbox_motd());
+    for (k, v) in extra_env {
+        c.env(k, v);
+    }
     Ok(c)
+}
+
+/// Program + extra env for the custom sandboxed shell: print the MOTD, then hand
+/// off to the user's interactive shell. The sandbox home is READ-ONLY, so zsh /
+/// bash can't lock their history file there ("zsh: locking failed"); redirect
+/// history to a writable per-session dir (under the temp allow-set) while still
+/// loading the user's own config. `$CONCIERGE_MOTD` is set by the caller.
+fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
+    let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+    let base = Path::new(&sh)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let state = std::env::temp_dir().join("concierge-shell");
+    let _ = std::fs::create_dir_all(&state);
+    let motd = "printf '%s\\n' \"$CONCIERGE_MOTD\"";
+    let mut env: Vec<(String, String)> = Vec::new();
+    let program = match base {
+        // ZDOTDIR redirects zsh's dotfiles; source the real ~/.zshrc, then point
+        // HISTFILE at the writable state dir so it wins over any rc setting.
+        "zsh" => {
+            let zdot = state.join("zdot");
+            let _ = std::fs::create_dir_all(&zdot);
+            let _ = std::fs::write(
+                zdot.join(".zshrc"),
+                format!(
+                    "[[ -f \"$HOME/.zshrc\" ]] && source \"$HOME/.zshrc\"\n\
+                     export HISTFILE=\"{s}/.zsh_history\"\n",
+                    s = state.display()
+                ),
+            );
+            env.push(("ZDOTDIR".to_owned(), zdot.display().to_string()));
+            vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                format!("{motd}; exec {sh} -i"),
+            ]
+        }
+        "bash" => {
+            let rc = state.join("bashrc");
+            let _ = std::fs::write(
+                &rc,
+                format!(
+                    "[ -f \"$HOME/.bashrc\" ] && source \"$HOME/.bashrc\"\n\
+                     export HISTFILE=\"{s}/.bash_history\"\n",
+                    s = state.display()
+                ),
+            );
+            vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                format!("{motd}; exec {sh} --rcfile '{}' -i", rc.display()),
+            ]
+        }
+        _ => {
+            env.push((
+                "HISTFILE".to_owned(),
+                state.join(".sh_history").display().to_string(),
+            ));
+            vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                format!("{motd}; exec {sh} -i"),
+            ]
+        }
+    };
+    (program, env)
 }
 
 /// The greeting an interactive sandboxed shell prints on start — what the
@@ -260,7 +325,10 @@ mod tests {
         let (repo, plan) = fixture();
         let c = shell_command(&repo, &plan, None, false, &[], &[]).unwrap();
         // The program wraps the shell: print $CONCIERGE_MOTD, then exec it.
-        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert!(
             args.iter()
                 .any(|a| a.contains("CONCIERGE_MOTD") && a.contains("exec")),
@@ -285,10 +353,40 @@ mod tests {
     }
 
     #[test]
+    fn interactive_shell_redirects_history_off_the_read_only_home() {
+        // The sandbox home is read-only, so pointing shell history there fails
+        // to lock ("zsh: locking failed"). Whatever the user's $SHELL, the
+        // wrapper must steer history at the writable per-session state dir.
+        let (program, env) = interactive_shell();
+        let state = std::env::temp_dir().join("concierge-shell");
+        let refs: Vec<String> = program
+            .iter()
+            .cloned()
+            .chain(env.iter().map(|(_, v)| v.clone()))
+            .collect();
+        assert!(
+            refs.iter()
+                .any(|r| r.contains(&state.display().to_string())),
+            "history/config is redirected under the writable state dir: {refs:?}"
+        );
+        // Never a bare `exec $SHELL -i` that would let zsh lock ~/.zsh_history:
+        // history must be steered via ZDOTDIR / --rcfile / HISTFILE.
+        let steered = env.iter().any(|(k, _)| k == "ZDOTDIR" || k == "HISTFILE")
+            || program.iter().any(|a| a.contains("--rcfile"));
+        assert!(
+            steered,
+            "history is steered explicitly: env={env:?} prog={program:?}"
+        );
+    }
+
+    #[test]
     fn explicit_agent_runs_directly_without_the_shell_wrapper() {
         let (repo, plan) = fixture();
         let c = shell_command(&repo, &plan, Some("claude"), false, &[], &[]).unwrap();
-        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let args: Vec<String> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
         assert!(
             args.iter().any(|a| a == "claude"),
             "an explicit --agent runs directly, not wrapped: {args:?}"
