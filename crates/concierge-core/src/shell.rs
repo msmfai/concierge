@@ -323,9 +323,13 @@ fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command
                 .into(),
         ));
     }
+    let boot = windows_bootstrap();
     let script = std::env::temp_dir().join("concierge-sandbox.ps1");
-    std::fs::write(&script, windows_bootstrap())
+    std::fs::write(&script, &boot)
         .map_err(|e| Error::Other(format!("write sandbox bootstrap: {e}")))?;
+    // Drop the exact script beside the session trace so a failure can be read
+    // against what actually ran.
+    crate::diag::artifact("sandbox.ps1", &boot);
     // Only existing paths can be relabeled; a missing allow simply isn't
     // writable, matching the seatbelt/bwrap treatment of absent paths.
     let allow = ws
@@ -335,6 +339,16 @@ fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command
         .map(|p| p.display().to_string())
         .collect::<Vec<_>>()
         .join("\n");
+    let interactive = program.is_empty();
+    crate::diag::event(
+        "sandbox",
+        "build",
+        &format!(
+            "windows Low-integrity shell · interactive={interactive} · allow_paths={} · script={}",
+            allow.lines().count(),
+            script.display()
+        ),
+    );
     let mut c = Command::new("powershell.exe");
     c.arg("-NoLogo")
         .arg("-NoProfile")
@@ -342,7 +356,7 @@ fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command
         .arg("Bypass");
     // Empty program = the interactive guarded shell: stay in the session after
     // the bootstrap runs. A given command runs Low and the session exits.
-    if program.is_empty() {
+    if interactive {
         c.arg("-NoExit");
     }
     c.arg("-File")
@@ -364,20 +378,41 @@ fn windows_bootstrap() -> String {
     // and every agent it launches inherits Low.
     r#"$ErrorActionPreference = 'Continue'
 
-# Grant Low-integrity write on each allowed path. Everything NOT relabeled stays
-# Medium; MIC's no-write-up rule keeps it read-only for this Low session, so the
-# pristine game and the rest of the machine stay safe with no per-path deny.
-if ($env:CONCIERGE_SB_ALLOW) {
-  foreach ($p in ($env:CONCIERGE_SB_ALLOW -split "`n")) {
-    if ($p -and (Test-Path -LiteralPath $p)) {
-      & icacls $p /setintegritylevel '(OI)(CI)L' > $null 2>&1
-    }
+# Tagged one-line tracing into the session trace so a silent failure is readable
+# after the fact. We relabel the LOG DIR to Low up front (below) so these keep
+# writing even after this session drops to Low integrity.
+function CgTrace($tag, $msg) {
+  if ($env:CONCIERGE_LOG_DIR) {
+    try {
+      $ts = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+      Add-Content -LiteralPath (Join-Path $env:CONCIERGE_LOG_DIR 'trace.log') `
+        -Value ('{0} {1,-9} {2,-12} {3}' -f $ts, 'bootstrap', $tag, $msg) -ErrorAction SilentlyContinue
+    } catch {}
   }
 }
 
-if ($env:CONCIERGE_MOTD) { Write-Host $env:CONCIERGE_MOTD }
+CgTrace 'start' ('begin; args=' + $args.Count + '; ps=' + $PSVersionTable.PSVersion + '; host=' + $Host.Name)
 
-$src = @'
+try {
+  # Make the log dir itself Low-writable so post-drop traces still land.
+  if ($env:CONCIERGE_LOG_DIR) { & icacls $env:CONCIERGE_LOG_DIR /setintegritylevel '(OI)(CI)L' > $null 2>&1 }
+
+  # Grant Low-integrity write on each allowed path. Everything NOT relabeled
+  # stays Medium; MIC's no-write-up rule keeps it read-only for this Low session.
+  CgTrace 'relabel' 'granting Low-integrity write on allow paths'
+  if ($env:CONCIERGE_SB_ALLOW) {
+    foreach ($p in ($env:CONCIERGE_SB_ALLOW -split "`n")) {
+      if ($p -and (Test-Path -LiteralPath $p)) {
+        & icacls $p /setintegritylevel '(OI)(CI)L' > $null 2>&1
+      }
+    }
+  }
+
+  CgTrace 'motd' 'printing MOTD'
+  if ($env:CONCIERGE_MOTD) { Write-Host $env:CONCIERGE_MOTD }
+
+  CgTrace 'addtype' 'compiling integrity helper'
+  $src = @'
 using System;
 using System.Runtime.InteropServices;
 public static class ConciergeSB {
@@ -408,16 +443,25 @@ public static class ConciergeSB {
   }
 }
 '@
-Add-Type -TypeDefinition $src -Language CSharp
-[ConciergeSB]::DropToLow()
+  Add-Type -TypeDefinition $src -Language CSharp
+  CgTrace 'droptolow' 'lowering this session to Low integrity'
+  [ConciergeSB]::DropToLow()
+  CgTrace 'lowered' 'this session is now Low integrity'
+} catch {
+  CgTrace 'error' ('bootstrap failed: ' + $_.Exception.Message)
+  Write-Host ('Concierge sandbox error: ' + $_.Exception.Message)
+}
 
 # A given command runs Low, then the session exits with its code. Otherwise
 # -NoExit drops you into the interactive Low-integrity prompt.
 if ($args.Count -gt 0) {
+  CgTrace 'run' ('running: ' + ($args -join ' '))
   if ($args.Count -gt 1) { & $args[0] @($args[1..($args.Count - 1)]) }
   else { & $args[0] }
+  CgTrace 'done' ('exit ' + $LASTEXITCODE)
   exit $LASTEXITCODE
 }
+CgTrace 'interactive' 'reached interactive handoff (-NoExit should keep this prompt open)'
 "#
     .to_owned()
 }

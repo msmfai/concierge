@@ -35,11 +35,15 @@ pub fn log_file() -> PathBuf {
     log_dir().join("concierge-gui.log")
 }
 
-/// The live terminal transcript — everything the sandboxed shell prints, so a
-/// blank or instantly-closed terminal can still be diagnosed.
+/// Create a fresh per-open session directory (`<logdir>/shell-<unixsecs>/`) and
+/// return it. Everything for one "open shell" — the trace from every layer, the
+/// terminal transcript, the exact sandbox script — lands inside it, so a failure
+/// is a single self-contained, greppable folder that syncs back with the app.
 #[must_use]
-pub fn terminal_log_file() -> PathBuf {
-    log_dir().join("concierge-terminal.log")
+pub fn new_session() -> PathBuf {
+    let dir = log_dir().join(format!("shell-{}", stamp()));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 fn stamp() -> u64 {

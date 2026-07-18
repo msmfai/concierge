@@ -3151,26 +3151,35 @@ impl App {
             .filter(|p| p.exists())
             .map_or(exe, |p| p.display().to_string());
         let cmd = vec![concierge, "shell".into()];
-        let transcript = diag::terminal_log_file();
-        diag::log(&format!(
-            "spawning: {cmd:?} · cwd={} · transcript={}",
-            dir.display(),
-            transcript.display()
-        ));
+        // One self-contained, greppable folder per open — trace.log (gui + cli +
+        // bootstrap), the terminal transcript, and the exact sandbox script.
+        // Setting CONCIERGE_LOG_DIR routes core::diag here for this process AND
+        // the spawned CLI + bootstrap inherit it.
+        let session = diag::new_session();
+        std::env::set_var("CONCIERGE_LOG_DIR", &session);
+        diag::log(&format!("opening shell session: {}", session.display()));
+        concierge::diag::event(
+            "gui",
+            "open",
+            &format!("profile={} · cmd={cmd:?}", dir.display()),
+        );
+        let transcript = session.join("terminal.raw");
         match terminal::PtyTerminal::spawn(&cmd, &dir, &[], 40, 100, Some(transcript)) {
             Ok(t) => {
+                concierge::diag::event("gui", "spawned", "PTY spawn OK");
                 diag::log("agent terminal spawned OK");
                 self.term = Some(t);
                 self.term_epoch = 0;
                 self.ai_visible = true;
             }
             Err(e) => {
+                concierge::diag::event("gui", "error", &format!("PTY spawn failed: {e}"));
                 diag::log(&format!("agent terminal FAILED to start: {e}"));
                 self.log
                     .push(format!("agent terminal failed to start: {e}"));
                 self.error = Some(format!(
                     "The sandboxed shell failed to start: {e}\n(details in {})",
-                    diag::log_file().display()
+                    session.display()
                 ));
             }
         }
