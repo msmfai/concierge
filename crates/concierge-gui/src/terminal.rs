@@ -25,12 +25,16 @@ pub struct PtyTerminal {
 
 impl PtyTerminal {
     /// Spawn `cmd` (argv) in a PTY of `rows`x`cols`, with env and cwd applied.
+    /// When `log` is set, every byte the child prints is also appended there —
+    /// so a terminal that renders blank or closes instantly can still be
+    /// diagnosed from the transcript afterwards.
     pub fn spawn(
         cmd: &[String],
         cwd: &std::path::Path,
         env: &[(String, String)],
         rows: u16,
         cols: u16,
+        log: Option<std::path::PathBuf>,
     ) -> std::io::Result<Self> {
         let pty = portable_pty::native_pty_system();
         let pair = pty
@@ -65,6 +69,15 @@ impl PtyTerminal {
 
         let p = Arc::clone(&parser);
         let d = Arc::clone(&dirty);
+        // Optional transcript: truncate on open so it holds only this session.
+        let mut transcript = log.and_then(|path| {
+            std::fs::File::create(&path)
+                .map(|mut f| {
+                    let _ = writeln!(f, "$ {}\n", cmd.join(" "));
+                    f
+                })
+                .ok()
+        });
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             while let Ok(n) = reader.read(&mut buf) {
@@ -73,8 +86,15 @@ impl PtyTerminal {
                 }
                 if let (Ok(mut parser), Some(chunk)) = (p.lock(), buf.get(..n)) {
                     parser.process(chunk);
+                    if let (Some(f), Some(chunk)) = (transcript.as_mut(), buf.get(..n)) {
+                        let _ = f.write_all(chunk);
+                        let _ = f.flush();
+                    }
                 }
                 d.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(f) = transcript.as_mut() {
+                let _ = writeln!(f, "\n[child exited]");
             }
             d.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
@@ -200,6 +220,7 @@ mod tests {
             &[],
             24,
             80,
+            None,
         )
         .unwrap();
         assert!(
@@ -207,6 +228,35 @@ mod tests {
             "grid: {:?}",
             term.text_rows()
         );
+    }
+
+    #[test]
+    fn transcript_captures_child_output() {
+        // The diagnostic transcript must hold what the child printed, so a blank
+        // terminal on a machine we can't see is still readable after the fact.
+        let log = std::env::temp_dir().join(format!("cg-term-log-{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&log);
+        let term = PtyTerminal::spawn(
+            &[
+                "/bin/sh".into(),
+                "-c".into(),
+                "printf 'transcript-marker'".into(),
+            ],
+            std::path::Path::new("/tmp"),
+            &[],
+            24,
+            80,
+            Some(log.clone()),
+        )
+        .unwrap();
+        assert!(wait_for(&term, "transcript-marker"), "grid missing marker");
+        std::thread::sleep(Duration::from_millis(150));
+        let contents = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            contents.contains("transcript-marker"),
+            "transcript did not capture output: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&log);
     }
 
     #[test]
@@ -218,6 +268,7 @@ mod tests {
             &[],
             24,
             80,
+            None,
         )
         .unwrap();
         term.send(b"hello-from-keystrokes\n");
@@ -248,6 +299,7 @@ mod tests {
             &[("CONCIERGE_SANDBOX".into(), "1".into())],
             24,
             80,
+            None,
         )
         .unwrap();
         assert!(wait_for(&term, "SBX=1"), "env: {:?}", term.text_rows());

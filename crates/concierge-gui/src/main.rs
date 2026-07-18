@@ -8,6 +8,7 @@
 
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 
+mod diag;
 mod terminal;
 
 use std::path::PathBuf;
@@ -164,6 +165,9 @@ fn main() -> eframe::Result {
     // Surfaces wgpu/winit diagnostics when RUST_LOG is set (e.g.
     // RUST_LOG=wgpu_core=info,wgpu_hal=info); silent otherwise.
     env_logger::Builder::from_default_env().init();
+    // A GUI app has no console on Windows, so also log to a file beside the exe
+    // (see diag) — that's how a failed terminal spawn becomes readable.
+    diag::start_session();
     // Wire every family/leaf adapter crate into core's resolver at startup.
     concierge_games::register();
     install_panic_hook();
@@ -3043,21 +3047,43 @@ impl App {
         // which silently fell back to a bare name that isn't on PATH (the release
         // is just unzipped), so the shell "did nothing".
         let exe = format!("concierge{}", std::env::consts::EXE_SUFFIX);
-        let concierge = std::env::current_exe()
+        let beside = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join(&exe)))
+            .and_then(|p| p.parent().map(|d| d.join(&exe)));
+        diag::log(&format!(
+            "start_agent_terminal: profile={} · looking for {exe} beside exe: {}",
+            dir.display(),
+            beside.as_ref().map_or_else(
+                || "<no exe dir>".to_owned(),
+                |p| format!("{} (exists={})", p.display(), p.exists())
+            ),
+        ));
+        let concierge = beside
             .filter(|p| p.exists())
             .map_or(exe, |p| p.display().to_string());
         let cmd = vec![concierge, "shell".into()];
-        match terminal::PtyTerminal::spawn(&cmd, &dir, &[], 40, 100) {
+        let transcript = diag::terminal_log_file();
+        diag::log(&format!(
+            "spawning: {cmd:?} · cwd={} · transcript={}",
+            dir.display(),
+            transcript.display()
+        ));
+        match terminal::PtyTerminal::spawn(&cmd, &dir, &[], 40, 100, Some(transcript)) {
             Ok(t) => {
+                diag::log("agent terminal spawned OK");
                 self.term = Some(t);
                 self.term_epoch = 0;
                 self.ai_visible = true;
             }
-            Err(e) => self
-                .log
-                .push(format!("agent terminal failed to start: {e}")),
+            Err(e) => {
+                diag::log(&format!("agent terminal FAILED to start: {e}"));
+                self.log
+                    .push(format!("agent terminal failed to start: {e}"));
+                self.error = Some(format!(
+                    "The sandboxed shell failed to start: {e}\n(details in {})",
+                    diag::log_file().display()
+                ));
+            }
         }
     }
 
