@@ -386,6 +386,9 @@ struct App {
     dark: bool,
     ai_visible: bool,
     undo: Vec<String>,
+    /// The first-run quick-start guide is showing (auto-hides once a pack is set
+    /// up + applied; re-openable from the top bar).
+    quickstart_open: bool,
     settings_open: bool,
     diff_open: bool,
     /// The enriched Preview text, computed once when the window opens (the
@@ -517,6 +520,7 @@ impl App {
             dark: true,
             ai_visible: true,
             undo: Vec::new(),
+            quickstart_open: true,
             settings_open: false,
             diff_open: false,
             preview_lines: Vec::new(),
@@ -2363,21 +2367,30 @@ impl App {
                 ui.colored_label(egui::Color32::from_rgb(220, 170, 90), w);
             }
             let Some(plan) = plan else {
-                if self.games.is_empty() {
+                if self.quickstart_open {
+                    self.quickstart(ui);
+                } else if self.games.is_empty() {
                     ui.heading("Welcome to Concierge");
                     ui.label(
                         "Add a game with the “+ add game” menu at the top, then create a \
                          profile to start building a modpack.",
                     );
-                    if let Some(ws) = &self.workspace {
-                        ui.add_space(4.0);
-                        ui.weak(format!("workspace: {}", ws.display()));
-                    }
                 } else {
                     ui.label("Select a game and profile above, or create a new profile.");
                 }
+                if let Some(ws) = &self.workspace {
+                    ui.add_space(4.0);
+                    ui.weak(format!("workspace: {}", ws.display()));
+                }
                 return;
             };
+            // Atop a pack, keep the guide until it's set up + applied.
+            let flow_complete = self.manifest.as_ref().is_some_and(|m| !m.mods.is_empty())
+                && realized.plan_hash.is_some();
+            if self.quickstart_open && !flow_complete {
+                self.quickstart(ui);
+                ui.add_space(6.0);
+            }
             let bethesda = is_bethesda(&plan.game.kind);
             let lex = concierge::game::adapter_for(&plan.game.kind)
                 .map_or_else(|_| concierge::game::Lexicon::default(), concierge::game::GameAdapter::lexicon);
@@ -2698,6 +2711,72 @@ impl App {
 }
 
 impl App {
+    /// The first-run quick-start guide: five numbered steps that check
+    /// themselves off as the pack comes together, plus the Setup-vs-Installed
+    /// distinction people trip on ("the interface doesn't change" — because
+    /// Installed only fills in AFTER Apply). Shown on the empty Welcome screen
+    /// and, compactly, atop a pack until it's set up and applied.
+    fn quickstart(&mut self, ui: &mut eframe::egui::Ui) {
+        use eframe::egui;
+        let has_game = !self.games.is_empty();
+        let has_profile = self.active_repo().is_some();
+        let has_mods = self.manifest.as_ref().is_some_and(|m| !m.mods.is_empty());
+        let is_realized = self
+            .active_repo()
+            .and_then(|r| Realized::load(&r).ok())
+            .and_then(|rz| rz.plan_hash)
+            .is_some();
+        // The first incomplete step is "current".
+        let done = [has_game, has_profile, has_mods, is_realized];
+        let current = done.iter().position(|d| !d).unwrap_or(usize::MAX);
+
+        egui::Frame::group(ui.style())
+            .fill(ui.visuals().faint_bg_color)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Quick start");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button("\u{2715} dismiss")
+                            .on_hover_text("hide the guide — re-open it with “Quick start” up top")
+                            .clicked()
+                        {
+                            self.quickstart_open = false;
+                        }
+                    });
+                });
+                let step = |ui: &mut egui::Ui, i: usize, done: bool, title: &str, detail: &str| {
+                    let (mark, col) = if done {
+                        ("\u{2714}", egui::Color32::from_rgb(120, 200, 140))
+                    } else if current == i {
+                        ("\u{25B6}", egui::Color32::from_rgb(120, 180, 240))
+                    } else {
+                        ("\u{2022}", ui.visuals().weak_text_color())
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(col, format!("{mark}  {}. {title}", i + 1));
+                        ui.weak(format!("— {detail}"));
+                    });
+                };
+                step(ui, 0, has_game, "Add your game",
+                    "the game you want to mod — use “＋ add game” at the top");
+                step(ui, 1, has_profile, "Create a modpack",
+                    "a named set of mods (a profile) for that game — “new profile”");
+                step(ui, 2, has_mods, "Add mods",
+                    "browse the catalog or paste a link — they go into your Setup");
+                step(ui, 3, is_realized, "Apply",
+                    "installs your Setup into a private copy of the game (the original is never touched)");
+                step(ui, 4, false, "Play", "launch the modded game");
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("Setup vs Installed").strong());
+                ui.weak(
+                    "Setup = the mods you WANT (editable). Installed = what's actually DEPLOYED to \
+                     the game. They match only after you click Apply — before that, Installed is \
+                     empty, which is why the two look the same at first.",
+                );
+            });
+    }
+
     /// Top bar — projected from the Screen: game/profile selectors (selection
     /// dispatches `select_game`/`select_profile`), rescan/delete/create-profile
     /// buttons + the new-profile field as transitions/fields; the ⚙ gear
@@ -2793,6 +2872,13 @@ impl App {
                         .clicked()
                     {
                         self.dispatch_intent("open_settings");
+                    }
+                    if ui
+                        .selectable_label(self.quickstart_open, "Quick start")
+                        .on_hover_text("show the first-run guide")
+                        .clicked()
+                    {
+                        self.quickstart_open = !self.quickstart_open;
                     }
                     self.render_kind(ui, concierge_ui::WidgetKind::Toggle);
                     if ui
@@ -4664,6 +4750,24 @@ mod tests {
             h.query_by_label_contains("click a mod").is_none(),
             "details placeholder gone after selecting a mod (click drove a re-render)"
         );
+    }
+
+    #[test]
+    fn kittest_quickstart_shows_on_first_run() {
+        // An empty App (no workspace) lands on the Welcome screen and renders the
+        // quick-start guide: the steps + the Setup-vs-Installed explainer.
+        use egui_kittest::kittest::Queryable as _;
+        concierge_games::register();
+        let app = super::App::new();
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(eframe::egui::vec2(1280.0, 800.0))
+            .build_state(|ctx, a: &mut super::App| a.update_ctx(ctx), app);
+        h.run_steps(4);
+        // ("Quick start" is intentionally not asserted — it matches both the
+        // panel heading and the top-bar toggle; the step text below is unique.)
+        h.get_by_label_contains("Add your game");
+        h.get_by_label_contains("Create a modpack");
+        h.get_by_label_contains("Setup vs Installed");
     }
 
     #[test]
