@@ -233,19 +233,15 @@ fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
 /// drop into an interactive prompt (the user's PowerShell profile still loads).
 #[cfg(windows)]
 fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
-    (
-        vec![
-            "powershell.exe".to_owned(),
-            "-NoLogo".to_owned(),
-            "-NoExit".to_owned(),
-        ],
-        Vec::new(),
-    )
+    // An empty program means "become the interactive guarded shell": the Windows
+    // bootstrap lowers THIS PowerShell session to Low integrity and -NoExit keeps
+    // you at the prompt — no nested process, so it stays attached to the terminal.
+    (Vec::new(), Vec::new())
 }
 
 /// The greeting an interactive sandboxed shell prints on start — what the
-/// sandbox is, and that you can run your own AI assistant (claude/codex) inside
-/// it. Kept plain-ASCII-safe so it renders in any terminal.
+/// sandbox is, and that you can run your own AI assistant inside it. Kept
+/// plain-ASCII-safe so it renders in any terminal.
 fn sandbox_motd() -> String {
     "\
 ========================================================================
@@ -255,12 +251,13 @@ fn sandbox_motd() -> String {
   the shared download cache. The pristine game and the rest of your
   machine are read-only; nothing you do here can escape Concierge.
 
-  Run an AI assistant right here, inside the sandbox:
-    claude    start Claude Code in this modpack
-    codex     start Codex CLI in this modpack
-  The profile already carries CLAUDE.md and the slash-commands
-  /health /curate /sort /conflicts /audit-ids, so the assistant knows
-  the tools. CONCIERGE_REPO points at this profile. Type 'exit' to leave.
+  Run your AI coding agent right here, inside the sandbox:
+    opencode    codex    claude
+  Whichever you have installed — start it and it builds the pack for
+  you, confined to this modpack. The profile carries CLAUDE.md and
+  AGENTS.md plus the slash-commands /health /curate /sort /conflicts
+  /audit-ids, so any agent already knows the tools. CONCIERGE_REPO
+  points at this profile. Type 'exit' to leave.
 ========================================================================
 "
     .to_owned()
@@ -301,15 +298,17 @@ fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command
     Ok(c)
 }
 
-/// The Windows sandbox: a PowerShell bootstrap that grants Low-integrity write
-/// on each allowed path (built-in `icacls`), prints the MOTD, then launches the
-/// inner program at Low integrity. Windows' Mandatory Integrity Control blocks a
-/// Low process from writing "up" to any Medium object, so everything NOT
-/// relabeled — the pristine game, the user's files, the whole machine — is
-/// read-only for free, mirroring the seatbelt/bwrap write-policy. Nothing to
-/// install (PowerShell + icacls ship with Windows); no Rust `unsafe` (the one
-/// privileged call lives in the bootstrap's embedded C#, shelled out to exactly
-/// like sandbox-exec / bwrap).
+/// The Windows sandbox: a single PowerShell session that grants Low-integrity
+/// write on each allowed path (built-in `icacls`), prints the MOTD, then lowers
+/// ITS OWN integrity to Low and continues — interactively (`-NoExit`) or running
+/// the given command. Windows' Mandatory Integrity Control then blocks that
+/// session (and anything it launches — your agent) from writing "up" to any
+/// Medium object, so everything NOT relabeled — the pristine game, your files,
+/// the whole machine — is read-only for free, mirroring the seatbelt/bwrap
+/// write-policy. Self-lowering (never a nested `CreateProcessAsUser`) keeps the
+/// session attached to the terminal the GUI spawned it in. Nothing to install
+/// (PowerShell + icacls ship with Windows); no Rust `unsafe` (the one privileged
+/// call lives in the embedded C#, shelled out to like sandbox-exec / bwrap).
 #[cfg(windows)]
 fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command> {
     if offline {
@@ -337,8 +336,13 @@ fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command
     c.arg("-NoLogo")
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-File")
+        .arg("Bypass");
+    // Empty program = the interactive guarded shell: stay in the session after
+    // the bootstrap runs. A given command runs Low and the session exits.
+    if program.is_empty() {
+        c.arg("-NoExit");
+    }
+    c.arg("-File")
         .arg(&script)
         .args(program)
         .env("CONCIERGE_SB_ALLOW", allow);
@@ -347,19 +351,18 @@ fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command
 
 /// The fixed PowerShell bootstrap for the Windows sandbox. Values arrive via the
 /// environment (`CONCIERGE_SB_ALLOW`, `CONCIERGE_MOTD`) and as the script's own
-/// arguments (the inner program), so the text needs no interpolation — which
-/// keeps it free of path-escaping bugs and lets it be unit-tested verbatim.
+/// arguments (an optional command to run), so the text needs no interpolation —
+/// which keeps it free of path-escaping bugs and lets it be unit-tested verbatim.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn windows_bootstrap() -> String {
-    // S-1-16-4096 is the Low mandatory-integrity SID. CreateRestrictedToken
-    // yields a token CreateProcessAsUser accepts WITHOUT SeAssignPrimaryTokenPrivilege
-    // (which standard users lack) — so a normal, non-admin user can spawn the
-    // Low-integrity child. The env block is passed through explicitly so the
-    // child inherits CONCIERGE_REPO / PATH / etc.
+    // S-1-16-4096 is the Low mandatory-integrity SID. A process may always LOWER
+    // its own integrity (never raise), so this needs no privilege and no nested
+    // process — the session the GUI spawned simply drops to Low and carries on,
+    // and every agent it launches inherits Low.
     r#"$ErrorActionPreference = 'Continue'
 
 # Grant Low-integrity write on each allowed path. Everything NOT relabeled stays
-# Medium; MIC's no-write-up rule keeps it read-only for the Low child, so the
+# Medium; MIC's no-write-up rule keeps it read-only for this Low session, so the
 # pristine game and the rest of the machine stay safe with no per-path deny.
 if ($env:CONCIERGE_SB_ALLOW) {
   foreach ($p in ($env:CONCIERGE_SB_ALLOW -split "`n")) {
@@ -373,79 +376,45 @@ if ($env:CONCIERGE_MOTD) { Write-Host $env:CONCIERGE_MOTD }
 
 $src = @'
 using System;
-using System.Text;
 using System.Runtime.InteropServices;
 public static class ConciergeSB {
-  const uint TOKEN_DUPLICATE=0x0002, TOKEN_QUERY=0x0008, TOKEN_ASSIGN_PRIMARY=0x0001,
-             TOKEN_ADJUST_DEFAULT=0x0080, TOKEN_ADJUST_SESSIONID=0x0100;
-  const int TokenIntegrityLevel=25;
-  const uint SE_GROUP_INTEGRITY=0x00000020;
-  const uint CREATE_UNICODE_ENVIRONMENT=0x00000400;
-  const uint INFINITE=0xFFFFFFFF;
-
+  const int TokenIntegrityLevel = 25;
+  const uint SE_GROUP_INTEGRITY = 0x00000020;
+  const uint TOKEN_ADJUST_DEFAULT = 0x0080, TOKEN_QUERY = 0x0008;
   [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
   [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
-  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct STARTUPINFO {
-    public int cb; public string lpReserved, lpDesktop, lpTitle;
-    public int dwX,dwY,dwXSize,dwYSize,dwXCountChars,dwYCountChars,dwFillAttribute,dwFlags;
-    public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
-  }
-  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
-
   [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr GetCurrentProcess();
   [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr h, uint acc, out IntPtr tok);
-  [DllImport("advapi32.dll", SetLastError=true)] static extern bool CreateRestrictedToken(IntPtr tok, uint flags, uint dsc, IntPtr ds, uint dpc, IntPtr dp, uint rsc, IntPtr rs, out IntPtr newtok);
   [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool ConvertStringSidToSid(string s, out IntPtr sid);
   [DllImport("advapi32.dll", SetLastError=true)] static extern bool SetTokenInformation(IntPtr tok, int cls, IntPtr info, int len);
-  [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr tok, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
-  [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
-  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
-  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr h);
   [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
   [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr h);
-
-  static IntPtr BuildEnv() {
-    var sb = new StringBuilder();
-    foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
-      sb.Append((string)e.Key).Append('=').Append((string)e.Value).Append('\0');
-    sb.Append('\0');
-    return Marshal.StringToHGlobalUni(sb.ToString());
-  }
-
-  public static int Run(string cmdline, string cwd) {
-    uint acc = TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ASSIGN_PRIMARY|TOKEN_ADJUST_DEFAULT|TOKEN_ADJUST_SESSIONID;
-    IntPtr tok, restricted, sid;
-    if (!OpenProcessToken(GetCurrentProcess(), acc, out tok)) throw new Exception("OpenProcessToken " + Marshal.GetLastWin32Error());
-    if (!CreateRestrictedToken(tok, 0, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted)) throw new Exception("CreateRestrictedToken " + Marshal.GetLastWin32Error());
+  // Lower THIS process to Low integrity. Allowed without privilege; every child
+  // (your agent) then inherits Low and stays confined to the granted paths.
+  public static void DropToLow() {
+    IntPtr tok, sid;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_DEFAULT | TOKEN_QUERY, out tok)) throw new Exception("OpenProcessToken " + Marshal.GetLastWin32Error());
     if (!ConvertStringSidToSid("S-1-16-4096", out sid)) throw new Exception("ConvertStringSidToSid " + Marshal.GetLastWin32Error());
     TOKEN_MANDATORY_LABEL tml = new TOKEN_MANDATORY_LABEL();
     tml.Label.Sid = sid; tml.Label.Attributes = SE_GROUP_INTEGRITY;
     int len = Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)) + (int)GetLengthSid(sid);
-    IntPtr pLabel = Marshal.AllocHGlobal(len);
-    Marshal.StructureToPtr(tml, pLabel, false);
-    if (!SetTokenInformation(restricted, TokenIntegrityLevel, pLabel, len)) throw new Exception("SetTokenInformation " + Marshal.GetLastWin32Error());
-    STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-    PROCESS_INFORMATION pi;
-    IntPtr env = BuildEnv();
-    var cmd = new StringBuilder(cmdline);
-    if (!CreateProcessAsUser(restricted, null, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_UNICODE_ENVIRONMENT, env, cwd, ref si, out pi))
-      throw new Exception("CreateProcessAsUser " + Marshal.GetLastWin32Error());
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    uint code; GetExitCodeProcess(pi.hProcess, out code);
-    CloseHandle(pi.hProcess); CloseHandle(pi.hThread); CloseHandle(restricted); CloseHandle(tok);
-    Marshal.FreeHGlobal(pLabel); Marshal.FreeHGlobal(env); LocalFree(sid);
-    return (int)code;
+    IntPtr p = Marshal.AllocHGlobal(len);
+    Marshal.StructureToPtr(tml, p, false);
+    if (!SetTokenInformation(tok, TokenIntegrityLevel, p, len)) throw new Exception("SetTokenInformation " + Marshal.GetLastWin32Error());
+    Marshal.FreeHGlobal(p); LocalFree(sid);
   }
 }
 '@
 Add-Type -TypeDefinition $src -Language CSharp
+[ConciergeSB]::DropToLow()
 
-# Rebuild the inner command line from this script's own arguments.
-$parts = @()
-foreach ($a in $args) {
-  if ($a -match '[\s"]') { $parts += '"' + ($a -replace '"', '\"') + '"' } else { $parts += $a }
+# A given command runs Low, then the session exits with its code. Otherwise
+# -NoExit drops you into the interactive Low-integrity prompt.
+if ($args.Count -gt 0) {
+  if ($args.Count -gt 1) { & $args[0] @($args[1..($args.Count - 1)]) }
+  else { & $args[0] }
+  exit $LASTEXITCODE
 }
-exit [ConciergeSB]::Run(([string]::Join(' ', $parts)), (Get-Location).Path)
 "#
     .to_owned()
 }
@@ -517,8 +486,8 @@ mod tests {
             .unwrap_or_default();
         assert!(motd.contains("Concierge sandbox"), "MOTD names the sandbox");
         assert!(
-            motd.contains("claude") && motd.contains("codex"),
-            "MOTD invites running claude/codex"
+            motd.contains("opencode") && motd.contains("codex") && motd.contains("claude"),
+            "MOTD invites running any of opencode/codex/claude"
         );
         assert!(
             motd.contains("read-only") || motd.contains("only write"),
@@ -584,11 +553,15 @@ mod tests {
             "relabels the allowed paths to Low integrity"
         );
         assert!(s.contains("(OI)(CI)L"), "Low label, inherited by children");
-        // …launches the child at the Low SID, without needing admin privilege…
+        // …lowers THIS session to the Low SID (no privilege, no nested process)…
         assert!(s.contains("S-1-16-4096"), "Low mandatory-integrity SID");
         assert!(
-            s.contains("CreateRestrictedToken") && s.contains("CreateProcessAsUser"),
-            "spawns the Low child with a restricted token (no admin privilege)"
+            s.contains("DropToLow") && s.contains("SetTokenInformation"),
+            "self-lowers this session's integrity (no CreateProcessAsUser)"
+        );
+        assert!(
+            !s.contains("CreateProcessAsUser"),
+            "no nested process — stays attached to the terminal"
         );
         // …and greets with the MOTD.
         assert!(s.contains("CONCIERGE_MOTD"), "prints the sandbox MOTD");
@@ -611,6 +584,11 @@ mod tests {
         assert!(
             args.iter().any(|a| a.contains("concierge-sandbox.ps1")),
             "runs the sandbox bootstrap script: {args:?}"
+        );
+        // Interactive = stay in the (self-lowered) session, no nested program.
+        assert!(
+            args.iter().any(|a| a == "-NoExit"),
+            "the interactive guarded shell stays open: {args:?}"
         );
         // The allowed write-set is handed to the bootstrap via the environment.
         assert!(
