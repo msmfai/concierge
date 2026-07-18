@@ -239,12 +239,20 @@ fn main() -> eframe::Result {
     )
 }
 
-/// egui's built-in fonts cover only a small emoji subset; anything outside it
-/// renders as a missing-glyph box. Append Noto Emoji (monochrome) as the last
-/// fallback for both font families so every icon in the UI has a glyph.
+/// egui's default text font lacks most symbols (arrows, dingbats, geometric
+/// shapes, math) AND all emoji, so those render as missing-glyph boxes. Append
+/// two fallbacks to both families: `DejaVu Sans` for the plain symbols and
+/// `Noto Emoji` for the emoji — in that order, so a symbol that exists in both
+/// (e.g. `▶`/`✔`) takes the clean outline over an emoji glyph.
 fn install_fonts(ctx: &eframe::egui::Context) {
     use eframe::egui::{FontData, FontDefinitions, FontFamily};
     let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "dejavu-symbols".to_owned(),
+        std::sync::Arc::new(FontData::from_static(include_bytes!(
+            "../assets/DejaVuSans.ttf"
+        ))),
+    );
     fonts.font_data.insert(
         "noto-emoji".to_owned(),
         std::sync::Arc::new(FontData::from_static(include_bytes!(
@@ -252,11 +260,9 @@ fn install_fonts(ctx: &eframe::egui::Context) {
         ))),
     );
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push("noto-emoji".to_owned());
+        let fam = fonts.families.entry(family).or_default();
+        fam.push("dejavu-symbols".to_owned());
+        fam.push("noto-emoji".to_owned());
     }
     ctx.set_fonts(fonts);
 }
@@ -2759,7 +2765,7 @@ impl App {
                     });
                 };
                 step(ui, 0, has_game, "Add your game",
-                    "the game you want to mod — use “＋ add game” at the top");
+                    "the game you want to mod — use “+ add game” at the top");
                 step(ui, 1, has_profile, "Create a modpack",
                     "a named set of mods (a profile) for that game — “new profile”");
                 step(ui, 2, has_mods, "Add mods",
@@ -3865,7 +3871,7 @@ impl App {
                 });
                 ui.add_space(4.0);
                 // Nexus-style card grid: one mod page-like card per hit. The green
-                // Nexus "download" is replaced by "＋ Add to manifest" (declarative
+                // Nexus "download" is replaced by "+ Add to manifest" (declarative
                 // curation — nothing is downloaded here).
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -4103,7 +4109,7 @@ impl App {
                             ui.add_enabled(false, egui::Button::new("✓ In pack"));
                         } else if let Some(tr) = add {
                             let btn = egui::Button::new(
-                                egui::RichText::new("＋ Add to pack").color(egui::Color32::WHITE),
+                                egui::RichText::new("+ Add to pack").color(egui::Color32::WHITE),
                             )
                             .fill(egui::Color32::from_rgb(78, 141, 74));
                             if ui
