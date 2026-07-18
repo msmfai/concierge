@@ -10,6 +10,7 @@ pub mod check;
 pub mod error;
 pub mod game;
 pub mod generations;
+pub mod install;
 pub mod launch;
 pub mod layout;
 pub mod lint;
