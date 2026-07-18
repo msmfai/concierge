@@ -1062,6 +1062,16 @@ fn run() -> Result<()> {
         } => {
             let extra: Vec<std::path::PathBuf> =
                 allow.iter().map(std::path::PathBuf::from).collect();
+            concierge::diag::event(
+                "cli",
+                "shell",
+                &format!(
+                    "start · kind={} · profile={} · agent={:?} · offline={offline} · cmd={cmd:?}",
+                    plan.game.kind,
+                    repo.profile.display(),
+                    agent.as_deref(),
+                ),
+            );
             let mut c = concierge::shell::shell_command(
                 &repo,
                 &plan,
@@ -1069,10 +1079,28 @@ fn run() -> Result<()> {
                 offline,
                 &extra,
                 &cmd,
-            )?;
-            let status = c
-                .status()
-                .map_err(|e| Error::Other(format!("sandboxed shell failed to start: {e}")))?;
+            )
+            .inspect_err(|e| {
+                concierge::diag::event("cli", "error", &format!("shell_command failed: {e}"));
+            })?;
+            let argv: Vec<String> = std::iter::once(c.get_program())
+                .chain(c.get_args())
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            concierge::diag::event("cli", "spawn", &format!("running {}", argv.join(" ")));
+            let status = c.status().map_err(|e| {
+                concierge::diag::event(
+                    "cli",
+                    "error",
+                    &format!("shell process failed to start: {e}"),
+                );
+                Error::Other(format!("sandboxed shell failed to start: {e}"))
+            })?;
+            concierge::diag::event(
+                "cli",
+                "exit",
+                &format!("sandbox process exited: code={:?}", status.code()),
+            );
             std::process::exit(status.code().unwrap_or(1));
         }
         Cmd::Undeploy { force } => {
