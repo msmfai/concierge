@@ -87,6 +87,24 @@ fn is_read_only(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|m| m.permissions().readonly())
 }
 
+/// Strip the Windows extended-length `\\?\` (and `\\?\UNC\`) prefix that
+/// `canonicalize` adds. No-op off Windows.
+#[allow(clippy::missing_const_for_fn)] // const-able only on the non-Windows body
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(s) = p.to_str() {
+            if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+                return PathBuf::from(format!(r"\\{rest}"));
+            }
+            if let Some(rest) = s.strip_prefix(r"\\?\") {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    p
+}
+
 /// Render the macOS seatbelt profile. Rule order is load-bearing: default
 /// deny-writes, then the allowed subtrees, then the hard denies so they win.
 pub fn seatbelt_profile(ws: &WriteSet, offline: bool) -> Result<String> {
@@ -136,6 +154,11 @@ pub fn shell_command(
             repo.profile.display()
         ))
     })?;
+    // On Windows `canonicalize` returns an extended-length `\\?\` path. Used as a
+    // process working directory it breaks PowerShell (it can't set that as its
+    // location and exits before running anything), and it confuses many tools —
+    // so strip the prefix. No-op elsewhere (canonicalize never adds it).
+    let profile = strip_verbatim(profile);
     let repo = &Repo::at(&profile);
     let ws = write_set(repo, plan, extra_allow);
     let mut extra_env: Vec<(String, String)> = Vec::new();
