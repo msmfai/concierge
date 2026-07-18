@@ -55,7 +55,6 @@ fn agent_guide_speaks_the_games_modding_norms() {
 /// up, and non-plugin games don't.
 #[test]
 fn every_bethesda_title_reports_a_plugin_order() {
-    use concierge::game::GameAdapter as _;
     concierge_games::register();
     for kind in [
         "fallout4",
