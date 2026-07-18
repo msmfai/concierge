@@ -1,0 +1,35 @@
+# On-demand Windows build for iterating on Windows-only issues without cutting a
+# release. Produces a zip of concierge.exe + concierge-gui.exe as a workflow
+# artifact (download with `gh run download`). The dev toolchain has no Windows
+# target, so this is how a Windows build gets produced from a macOS dev machine.
+name: Windows build (manual)
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI + GUI
+        run: cargo build --release -p concierge -p concierge-gui
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "concierge-windows-dev"
+          New-Item -ItemType Directory -Path $name | Out-Null
+          Copy-Item target/release/concierge.exe, target/release/concierge-gui.exe, LICENSE, README.md $name/
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: concierge-windows-dev
+          path: concierge-windows-dev.zip
+          retention-days: 14
