@@ -138,19 +138,50 @@ pub fn shell_command(
     })?;
     let repo = &Repo::at(&profile);
     let ws = write_set(repo, plan, extra_allow);
-    let program: Vec<String> = if cmd.is_empty() {
-        match agent {
-            Some(a) => vec![a.to_owned()],
-            None => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned())],
-        }
-    } else {
+    let program: Vec<String> = if !cmd.is_empty() {
         cmd.to_vec()
+    } else if let Some(a) = agent {
+        vec![a.to_owned()]
+    } else {
+        // A custom sandboxed shell: print the MOTD (what the sandbox is + that you
+        // can run claude/codex here), then hand off to the user's interactive
+        // shell. `$CONCIERGE_MOTD` is set on the command below.
+        let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+        vec![
+            "/bin/sh".to_owned(),
+            "-c".to_owned(),
+            format!("printf '%s\\n' \"$CONCIERGE_MOTD\"; exec {sh} -i"),
+        ]
     };
     let mut c = sandboxed(&ws, offline, &program)?;
     c.current_dir(&repo.profile)
         .env("CONCIERGE_REPO", &repo.profile)
-        .env("CONCIERGE_SANDBOX", "1");
+        .env("CONCIERGE_SANDBOX", "1")
+        .env("CONCIERGE_MOTD", sandbox_motd());
     Ok(c)
+}
+
+/// The greeting an interactive sandboxed shell prints on start — what the
+/// sandbox is, and that you can run your own AI assistant (claude/codex) inside
+/// it. Kept plain-ASCII-safe so it renders in any terminal.
+fn sandbox_motd() -> String {
+    "\
+========================================================================
+  Concierge sandbox
+========================================================================
+  This shell can only write to THIS modpack — its profile folder and
+  the shared download cache. The pristine game and the rest of your
+  machine are read-only; nothing you do here can escape Concierge.
+
+  Run an AI assistant right here, inside the sandbox:
+    claude    start Claude Code in this modpack
+    codex     start Codex CLI in this modpack
+  The profile already carries CLAUDE.md and the slash-commands
+  /health /curate /sort /conflicts /audit-ids, so the assistant knows
+  the tools. CONCIERGE_REPO points at this profile. Type 'exit' to leave.
+========================================================================
+"
+    .to_owned()
 }
 
 #[cfg(target_os = "macos")]
@@ -222,6 +253,50 @@ mod tests {
          [[game.custom.config]]\npath = \"/tmp/concierge-shell-test/cfg/order.txt\"\n\
          line_prefix = \"\"\ntemplate = \"{{plugins}}\"\n"
             .to_owned()
+    }
+
+    #[test]
+    fn interactive_shell_greets_with_the_sandbox_motd() {
+        let (repo, plan) = fixture();
+        let c = shell_command(&repo, &plan, None, false, &[], &[]).unwrap();
+        // The program wraps the shell: print $CONCIERGE_MOTD, then exec it.
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(
+            args.iter()
+                .any(|a| a.contains("CONCIERGE_MOTD") && a.contains("exec")),
+            "the shell wrapper prints the MOTD then execs the shell: {args:?}"
+        );
+        // …and the MOTD explains the sandbox + that you can run claude/codex.
+        let motd = c
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("CONCIERGE_MOTD"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        assert!(motd.contains("Concierge sandbox"), "MOTD names the sandbox");
+        assert!(
+            motd.contains("claude") && motd.contains("codex"),
+            "MOTD invites running claude/codex"
+        );
+        assert!(
+            motd.contains("read-only") || motd.contains("only write"),
+            "MOTD explains the write confinement"
+        );
+    }
+
+    #[test]
+    fn explicit_agent_runs_directly_without_the_shell_wrapper() {
+        let (repo, plan) = fixture();
+        let c = shell_command(&repo, &plan, Some("claude"), false, &[], &[]).unwrap();
+        let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(
+            args.iter().any(|a| a == "claude"),
+            "an explicit --agent runs directly, not wrapped: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.contains("CONCIERGE_MOTD")),
+            "no MOTD wrapper for an explicit agent"
+        );
     }
 
     #[test]

@@ -2373,9 +2373,7 @@ impl App {
                 ui.colored_label(egui::Color32::from_rgb(220, 170, 90), w);
             }
             let Some(plan) = plan else {
-                if self.quickstart_open {
-                    self.quickstart(ui);
-                } else if self.games.is_empty() {
+                if self.games.is_empty() {
                     ui.heading("Welcome to Concierge");
                     ui.label(
                         "Add a game with the “+ add game” menu at the top, then create a \
@@ -2388,15 +2386,12 @@ impl App {
                     ui.add_space(4.0);
                     ui.weak(format!("workspace: {}", ws.display()));
                 }
+                ui.add_space(6.0);
+                if ui.button("Open the quick-start guide").clicked() {
+                    self.quickstart_open = true;
+                }
                 return;
             };
-            // Atop a pack, keep the guide until it's set up + applied.
-            let flow_complete = self.manifest.as_ref().is_some_and(|m| !m.mods.is_empty())
-                && realized.plan_hash.is_some();
-            if self.quickstart_open && !flow_complete {
-                self.quickstart(ui);
-                ui.add_space(6.0);
-            }
             let bethesda = is_bethesda(&plan.game.kind);
             let lex = concierge::game::adapter_for(&plan.game.kind)
                 .map_or_else(|_| concierge::game::Lexicon::default(), concierge::game::GameAdapter::lexicon);
@@ -2704,6 +2699,7 @@ impl App {
         self.diff_window(ctx);
         self.browse_window(ctx);
         self.download_window(ctx);
+        self.quickstart_window(ctx);
         self.confirm_modal(ctx);
 
         if let Some(edit) = self.edit.take() {
@@ -2717,13 +2713,15 @@ impl App {
 }
 
 impl App {
-    /// The first-run quick-start guide: five numbered steps that check
-    /// themselves off as the pack comes together, plus the Setup-vs-Installed
-    /// distinction people trip on ("the interface doesn't change" — because
-    /// Installed only fills in AFTER Apply). Shown on the empty Welcome screen
-    /// and, compactly, atop a pack until it's set up and applied.
-    fn quickstart(&mut self, ui: &mut eframe::egui::Ui) {
+    /// The quick-start guide — a full "how to use Concierge" pop-up. The five
+    /// steps check themselves off as the pack comes together; below them, the
+    /// Setup-vs-Installed distinction and a reference to the key features and the
+    /// agent shell. Opens on first run and from the top-bar "Quick start" toggle.
+    fn quickstart_window(&mut self, ctx: &eframe::egui::Context) {
         use eframe::egui;
+        if !self.quickstart_open {
+            return;
+        }
         let has_game = !self.games.is_empty();
         let has_profile = self.active_repo().is_some();
         let has_mods = self.manifest.as_ref().is_some_and(|m| !m.mods.is_empty());
@@ -2732,25 +2730,25 @@ impl App {
             .and_then(|r| Realized::load(&r).ok())
             .and_then(|rz| rz.plan_hash)
             .is_some();
-        // The first incomplete step is "current".
         let done = [has_game, has_profile, has_mods, is_realized];
         let current = done.iter().position(|d| !d).unwrap_or(usize::MAX);
 
-        egui::Frame::group(ui.style())
-            .fill(ui.visuals().faint_bg_color)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("Quick start");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .small_button("\u{2715} dismiss")
-                            .on_hover_text("hide the guide — re-open it with “Quick start” up top")
-                            .clicked()
-                        {
-                            self.quickstart_open = false;
-                        }
-                    });
-                });
+        let mut open = true;
+        egui::Window::new("How to use Concierge")
+            .open(&mut open)
+            .collapsible(false)
+            .default_width(560.0)
+            .default_height(600.0)
+            .scroll([false, true])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    "Concierge builds a modded COPY of your game from a text modpack — your \
+                     original install is never touched.",
+                );
+                ui.add_space(8.0);
+
+                ui.heading("The flow");
                 let step = |ui: &mut egui::Ui, i: usize, done: bool, title: &str, detail: &str| {
                     let (mark, col) = if done {
                         ("\u{2714}", egui::Color32::from_rgb(120, 200, 140))
@@ -2764,23 +2762,84 @@ impl App {
                         ui.weak(format!("— {detail}"));
                     });
                 };
-                step(ui, 0, has_game, "Add your game",
-                    "the game you want to mod — use “+ add game” at the top");
-                step(ui, 1, has_profile, "Create a modpack",
-                    "a named set of mods (a profile) for that game — “new profile”");
-                step(ui, 2, has_mods, "Add mods",
-                    "browse the catalog or paste a link — they go into your Setup");
-                step(ui, 3, is_realized, "Apply",
-                    "installs your Setup into a private copy of the game (the original is never touched)");
+                step(
+                    ui,
+                    0,
+                    has_game,
+                    "Add your game",
+                    "the game you want to mod — “+ add game” at the top",
+                );
+                step(
+                    ui,
+                    1,
+                    has_profile,
+                    "Create a modpack",
+                    "a named profile of mods for that game — “new profile”",
+                );
+                step(
+                    ui,
+                    2,
+                    has_mods,
+                    "Add mods",
+                    "“browse” the catalog or “+ add mod” with a link — they go into your Setup",
+                );
+                step(
+                    ui,
+                    3,
+                    is_realized,
+                    "Apply",
+                    "installs your Setup into a private copy of the game",
+                );
                 step(ui, 4, false, "Play", "launch the modded game");
-                ui.add_space(6.0);
-                ui.label(egui::RichText::new("Setup vs Installed").strong());
+
+                ui.add_space(10.0);
+                ui.heading("Setup vs Installed");
+                ui.label("• Setup — the mods you WANT. Editable; this is your plan.");
+                ui.label(
+                    "• Installed — what's actually DEPLOYED to the game right now. Read-only.",
+                );
                 ui.weak(
-                    "Setup = the mods you WANT (editable). Installed = what's actually DEPLOYED to \
-                     the game. They match only after you click Apply — before that, Installed is \
-                     empty, which is why the two look the same at first.",
+                    "They match only after you Apply. Before that, Installed is empty — which is \
+                     why the two tabs can look the same at first.",
+                );
+
+                ui.add_space(10.0);
+                ui.heading("Key features");
+                ui.label("• Browse — search the mod catalog and add with one click.");
+                ui.label(
+                    "• Preview — see exactly what an Apply would change (files, conflicts, load \
+                     order) before it happens.",
+                );
+                ui.label(
+                    "• Sort load order / Conflicts — resolve mod ordering and file overwrites.",
+                );
+                ui.label(
+                    "• Foundational tools — a game's script extender (SKSE/F4SE/…) installs to the \
+                     game root and launches through automatically; it sits in its own slot.",
+                );
+                ui.label("• Verify — confirm your original game files are untouched.");
+                ui.label(
+                    "• Undo / roll back — every change is reversible; Uninstall removes everything \
+                     Concierge placed.",
+                );
+
+                ui.add_space(10.0);
+                ui.heading("The agent terminal");
+                ui.label(
+                    "The right-hand panel is a shell sandboxed to Concierge — it can only touch \
+                     this modpack, never your machine. Run `claude` or `codex` in it to have an AI \
+                     assistant build and maintain the pack; everything it does lands in the same \
+                     modpack file you can see and edit.",
+                );
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.weak(
+                    "Nothing is installed until you Apply. Re-open this guide any time with \
+                     “Quick start” up top.",
                 );
             });
+        self.quickstart_open = open;
     }
 
     /// Top bar — projected from the Screen: game/profile selectors (selection
@@ -2937,10 +2996,10 @@ impl App {
         });
     }
 
-    /// Start (or focus) the sandboxed agent terminal for the ACTIVE profile:
-    /// `concierge shell --agent claude` in the profile dir, inside the
-    /// OS sandbox — the real interactive harness (permission prompts, plan
-    /// mode, skills).
+    /// Start (or focus) the sandboxed shell for the ACTIVE profile: `concierge
+    /// shell` in the profile dir, inside the OS sandbox. It greets with an MOTD
+    /// explaining the sandbox and that you can run `claude`/`codex` in it — a
+    /// custom shell, not an auto-launched agent, so the user picks their tool.
     fn start_agent_terminal(&mut self) {
         let Some(dir) = self.profiles.get(self.profile_idx).map(|p| p.dir.clone()) else {
             self.log.push("no active profile for the agent".to_owned());
@@ -2951,12 +3010,7 @@ impl App {
             .and_then(|p| p.parent().map(|d| d.join("concierge")))
             .filter(|p| p.exists())
             .map_or_else(|| "concierge".to_owned(), |p| p.display().to_string());
-        let agent = if which_agent_available() {
-            "claude"
-        } else {
-            "/bin/sh"
-        };
-        let cmd = vec![concierge, "shell".into(), "--agent".into(), agent.into()];
+        let cmd = vec![concierge, "shell".into()];
         match terminal::PtyTerminal::spawn(&cmd, &dir, &[], 40, 100) {
             Ok(t) => {
                 self.term = Some(t);
@@ -3052,21 +3106,23 @@ impl App {
                     let running = self.term.as_ref().is_some_and(|t| !t.finished());
                     if self.term.is_none() {
                         ui.add_space(8.0);
-                        if ui.button("Start agent session").clicked() {
+                        if ui.button("Open sandboxed shell").clicked() {
                             self.start_agent_terminal();
                         }
                         ui.add_space(6.0);
                         ui.weak(
-                            "Opens your agent (claude) in this profile folder, inside the \
-                             sandbox. It has CLAUDE.md + slash-commands: /health, /curate, \
-                             /audit-ids, /sort, /conflicts. You can also open a terminal \
-                             there yourself and get the exact same thing.",
+                            "A shell sandboxed to Concierge in this modpack. Run `claude` or \
+                             `codex` in it to have an AI assistant build the pack — they're \
+                             confined to this modpack, never your machine. The profile carries \
+                             CLAUDE.md + slash-commands (/health, /curate, /sort, /conflicts, \
+                             /audit-ids), so the assistant already knows the tools.",
                         );
                         if !self.agent_available {
                             ui.add_space(6.0);
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 170, 90),
-                                "claude CLI not found — a plain shell will open instead",
+                                "Tip: install the `claude` or `codex` CLI to use an AI assistant \
+                                 here — the shell itself works without them.",
                             );
                         }
                         return;
@@ -4712,6 +4768,7 @@ mod tests {
         let mut app = super::App::new();
         app.manifest = Some(manifest);
         app.plan = Some(plan);
+        app.quickstart_open = false; // a configured pack, not first-run
         app
     }
 
