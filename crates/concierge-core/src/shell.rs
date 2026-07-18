@@ -719,6 +719,9 @@ mod tests {
     }
 
     #[test]
+    // Seatbelt is the macOS backend, and its path-escaper rejects the
+    // backslashes in a Windows temp path — so this only applies off-Windows.
+    #[cfg(not(windows))]
     fn seatbelt_profile_orders_rules_correctly() {
         let (repo, plan) = fixture();
         let ws = write_set(&repo, &plan, &[]);
