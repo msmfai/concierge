@@ -319,6 +319,29 @@ pub fn set_pristine(doc: &str, path: &str) -> Result<String> {
     Ok(d.to_string())
 }
 
+/// Set `[game].dlc` — the base + DLC masters this profile actually owns
+/// (detected from the install's `Data/` folder). When present it overrides the
+/// adapter's assume-every-DLC default in the rendered load order, so a player
+/// missing some DLC isn't handed masters they don't own. An empty slice clears
+/// it (reverting to the assume-all default). Format-preserving.
+pub fn set_dlc(doc: &str, dlc: &[String]) -> Result<String> {
+    let mut d = parse(doc)?;
+    let game = d
+        .get_mut("game")
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| Error::Manifest("manifest has no [game] block".to_owned()))?;
+    if dlc.is_empty() {
+        game.remove("dlc");
+    } else {
+        let mut arr = toml_edit::Array::new();
+        for p in dlc {
+            arr.push(p.as_str());
+        }
+        game.insert("dlc", toml_edit::value(arr));
+    }
+    Ok(d.to_string())
+}
+
 /// Set the pack's `[compat].game_version` and `.loader` — what a Modrinth
 /// (Minecraft) resolve filters on, so "add" picks the right build. An empty
 /// value clears that field. Creates `[compat]` if absent. Format-preserving.

@@ -281,6 +281,9 @@ enum Edit {
     Add(NewMod),
     /// Point the profile at the game's install folder (`[game].pristine`).
     SetPristine(String),
+    /// Set `[game].dlc` — the base+DLC masters detected in the install (only what
+    /// the player owns, so the load order doesn't assume every DLC).
+    SetDlc(Vec<String>),
     /// Set `[compat]` game version + loader (for Modrinth/Minecraft resolves).
     SetCompat(String, String),
 }
@@ -1292,6 +1295,7 @@ impl App {
             Edit::Remove(name) => manifest_edit::remove_mod(&text, &name),
             Edit::Add(m) => manifest_edit::add_mod(&text, &m),
             Edit::SetPristine(p) => manifest_edit::set_pristine(&text, p.trim()),
+            Edit::SetDlc(dlc) => manifest_edit::set_dlc(&text, &dlc),
             Edit::SetCompat(gv, loader) => {
                 manifest_edit::set_compat(&text, gv.trim(), loader.trim())
             }
@@ -2418,6 +2422,44 @@ impl App {
                 }
                 return;
             };
+            // Onboarding: the one thing a fresh profile is missing is where the
+            // game lives. Make it unmissable HERE (not just buried in Settings),
+            // with one-click Steam detection — and setting it also detects which
+            // DLC you own, so the load order matches your install.
+            let pristine = plan.game.pristine.trim();
+            let pristine_ok =
+                !pristine.is_empty() && std::path::Path::new(pristine).exists();
+            if !pristine_ok {
+                ui.add_space(4.0);
+                ui.group(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(230, 180, 100),
+                        "\u{26a0} Point Concierge at your game install",
+                    );
+                    ui.label(
+                        "Concierge doesn't know where this game is installed yet. Set that \
+                         and it detects which DLC you own. Your original install is never \
+                         modified — mods deploy into a separate copy.",
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Detect via Steam").clicked() {
+                            self.detect_steam_install();
+                        }
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.pristine_input)
+                                .hint_text("…or paste the install folder"),
+                        );
+                        if ui.button("Set folder").clicked() {
+                            let p = self.pristine_input.trim().to_owned();
+                            if !p.is_empty() {
+                                self.pristine_input.clear();
+                                self.set_install_folder(p);
+                            }
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+            }
             let bethesda = is_bethesda(&plan.game.kind);
             let lex = concierge::game::adapter_for(&plan.game.kind)
                 .map_or_else(|_| concierge::game::Lexicon::default(), concierge::game::GameAdapter::lexicon);
@@ -3031,6 +3073,53 @@ impl App {
                 }
             });
         });
+    }
+
+    /// Point the profile at its game install AND detect which base/DLC masters
+    /// that install actually has — so the load order carries only DLC the player
+    /// owns, instead of the adapter's assume-every-DLC default.
+    fn set_install_folder(&mut self, path: String) {
+        let path = path.trim().to_owned();
+        if path.is_empty() {
+            return;
+        }
+        let kind = self.manifest.as_ref().map(|m| m.game.kind.clone());
+        self.apply(Edit::SetPristine(path.clone()));
+        if let Some(dlc) = kind
+            .and_then(|k| concierge::install::owned_base_plugins(&k, std::path::Path::new(&path)))
+        {
+            let owned = dlc.len();
+            self.apply(Edit::SetDlc(dlc));
+            self.notice = Some(format!(
+                "Install folder set. Found {owned} base/DLC master(s) you own — the load \
+                 order now matches your install (DLC you don't have aren't listed)."
+            ));
+        } else {
+            self.notice = Some("Game install folder set.".to_owned());
+        }
+    }
+
+    /// Auto-locate the active game through Steam (library folders + app manifest)
+    /// and set it as the install folder. Falls back to asking for the path.
+    fn detect_steam_install(&mut self) {
+        let app_id = self
+            .manifest
+            .as_ref()
+            .map(|m| m.game.kind.clone())
+            .and_then(|k| {
+                concierge::game::try_adapter(&k)
+                    .and_then(concierge::game::GameAdapter::steam_app_id)
+            });
+        match app_id.and_then(concierge::install::find_steam_install) {
+            Some(p) => self.set_install_folder(p.display().to_string()),
+            None => {
+                self.error = Some(
+                    "Couldn't find the install via Steam. Enter the game's install folder \
+                     manually below."
+                        .to_owned(),
+                );
+            }
+        }
     }
 
     /// Start (or focus) the sandboxed shell for the ACTIVE profile: `concierge
@@ -3733,17 +3822,24 @@ impl App {
                              your original is never modified.",
                         );
                         ui.horizontal(|ui| {
+                            if ui
+                                .button("Detect via Steam")
+                                .on_hover_text(
+                                    "look up this game in your Steam libraries and set the folder",
+                                )
+                                .clicked()
+                            {
+                                self.detect_steam_install();
+                            }
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.pristine_input)
-                                    .hint_text("/path/to/your/game/install"),
+                                    .hint_text("…or paste the install folder"),
                             );
                             if ui.button("Save path").clicked() {
                                 let p = self.pristine_input.trim().to_owned();
                                 if !p.is_empty() {
                                     self.pristine_input.clear();
-                                    self.apply(Edit::SetPristine(p));
-                                    self.notice =
-                                        Some("Game install folder saved.".to_owned());
+                                    self.set_install_folder(p);
                                 }
                             }
                         });
