@@ -1041,6 +1041,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // exercises a POSIX symlink; the guard itself is cross-platform
     fn broken_symlink_instance_gives_a_clear_error() {
         let base = std::env::temp_dir().join(format!("cg-brokenlink-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);

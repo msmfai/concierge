@@ -48,3 +48,22 @@ jobs:
         run: cargo build --workspace
       - name: Test
         run: cargo test --workspace
+
+  # The Windows agent-shell sandbox (Low-integrity confinement) can only be
+  # verified on a real Windows host — the dev toolchain ships no Windows target,
+  # so it never compiles locally. Build and lint concierge-core here, then run
+  # the smoke test that actually spawns the sandbox and asserts the Low child can
+  # write inside the write-set but is blocked from writing outside it.
+  windows-sandbox:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy (concierge-core)
+        run: cargo clippy -p concierge-core --lib
+      - name: Test the sandbox confinement
+        run: cargo test -p concierge-core --lib shell -- --nocapture
