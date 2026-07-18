@@ -28,8 +28,13 @@ fn put(path: &Path, body: &str) -> Result<bool> {
 /// files created this call (empty = everything was already there).
 pub fn provision_profile(dir: &Path, kind: &str) -> Result<Vec<String>> {
     let mut created = Vec::new();
+    // The same guide serves every agent: claude reads CLAUDE.md, codex and
+    // opencode read AGENTS.md — so the sandboxed shell is preconfigured whichever
+    // one you run.
+    let g = guide(kind);
     let files: &[(&str, String)] = &[
-        ("CLAUDE.md", guide(kind)),
+        ("CLAUDE.md", g.clone()),
+        ("AGENTS.md", g),
         (".claude/settings.json", SETTINGS.to_owned()),
         (".claude/commands/health.md", HEALTH.to_owned()),
         (".claude/commands/sort.md", SORT.to_owned()),
@@ -217,10 +222,11 @@ mod tests {
         let created = provision_profile(&dir, "fallout4").unwrap();
         assert_eq!(
             created.len(),
-            8,
-            "guide + settings + 6 commands: {created:?}"
+            9,
+            "guide (CLAUDE.md + AGENTS.md) + settings + 6 commands: {created:?}"
         );
         assert!(dir.join("CLAUDE.md").exists());
+        assert!(dir.join("AGENTS.md").exists());
         assert!(dir.join(".claude/settings.json").exists());
         assert!(dir.join(".claude/commands/audit-ids.md").exists());
         // Second run creates nothing and clobbers nothing.

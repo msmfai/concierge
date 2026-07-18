@@ -2124,10 +2124,32 @@ fn fmt_dur(secs: u64) -> String {
     }
 }
 
+/// Is any supported AI coding agent on PATH? The sandboxed shell is agent-
+/// agnostic — you run whichever of these you have.
 fn which_agent_available() -> bool {
-    std::process::Command::new("claude")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
+    ["opencode", "claude", "codex"]
+        .iter()
+        .any(|a| agent_on_path(a))
+}
+
+/// Whether `name` is a runnable CLI on PATH. On Windows, npm/scoop install these
+/// as `.cmd`/`.ps1` shims that `Command::new(name)` (which only tries `.exe`)
+/// never resolves — so go through `cmd /c` to honor PATHEXT, matching how the
+/// sandbox shell itself finds them.
+fn agent_on_path(name: &str) -> bool {
+    #[cfg(windows)]
+    let mut c = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/c", name, "--version"]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut c = {
+        let mut c = std::process::Command::new(name);
+        c.arg("--version");
+        c
+    };
+    c.stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
@@ -3016,11 +3038,16 @@ impl App {
             self.log.push("no active profile for the agent".to_owned());
             return;
         };
+        // The CLI ships next to the GUI. On Windows it's `concierge.exe`, so use
+        // the platform exe suffix — joining a bare "concierge" never exists there,
+        // which silently fell back to a bare name that isn't on PATH (the release
+        // is just unzipped), so the shell "did nothing".
+        let exe = format!("concierge{}", std::env::consts::EXE_SUFFIX);
         let concierge = std::env::current_exe()
             .ok()
-            .and_then(|p| p.parent().map(|d| d.join("concierge")))
+            .and_then(|p| p.parent().map(|d| d.join(&exe)))
             .filter(|p| p.exists())
-            .map_or_else(|| "concierge".to_owned(), |p| p.display().to_string());
+            .map_or(exe, |p| p.display().to_string());
         let cmd = vec![concierge, "shell".into()];
         match terminal::PtyTerminal::spawn(&cmd, &dir, &[], 40, 100) {
             Ok(t) => {
@@ -3122,18 +3149,19 @@ impl App {
                         }
                         ui.add_space(6.0);
                         ui.weak(
-                            "A shell sandboxed to Concierge in this modpack. Run `claude` or \
-                             `codex` in it to have an AI assistant build the pack — they're \
-                             confined to this modpack, never your machine. The profile carries \
-                             CLAUDE.md + slash-commands (/health, /curate, /sort, /conflicts, \
-                             /audit-ids), so the assistant already knows the tools.",
+                            "A terminal sandboxed to Concierge in this modpack. Start your AI \
+                             coding agent in it — `opencode`, `codex`, or `claude` — and it \
+                             builds the pack for you, confined to this modpack, never your \
+                             machine. The profile carries CLAUDE.md + AGENTS.md and the \
+                             slash-commands (/health, /curate, /sort, /conflicts, /audit-ids), \
+                             so any agent already knows the tools.",
                         );
                         if !self.agent_available {
                             ui.add_space(6.0);
                             ui.colored_label(
                                 egui::Color32::from_rgb(220, 170, 90),
-                                "Tip: install the `claude` or `codex` CLI to use an AI assistant \
-                                 here — the shell itself works without them.",
+                                "Tip: install one of `opencode`, `codex`, or `claude` to run an \
+                                 AI agent here — the terminal itself works without them.",
                             );
                         }
                         return;
