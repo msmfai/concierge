@@ -3164,7 +3164,13 @@ impl App {
             &format!("profile={} · cmd={cmd:?}", dir.display()),
         );
         let transcript = session.join("terminal.raw");
-        match terminal::PtyTerminal::spawn(&cmd, &dir, &[], 40, 100, Some(transcript)) {
+        // Pass the session dir explicitly too, so the CLI inherits it regardless
+        // of how the PTY seeds the child environment.
+        let env = vec![(
+            "CONCIERGE_LOG_DIR".to_owned(),
+            session.display().to_string(),
+        )];
+        match terminal::PtyTerminal::spawn(&cmd, &dir, &env, 40, 100, Some(transcript)) {
             Ok(t) => {
                 concierge::diag::event("gui", "spawned", "PTY spawn OK");
                 diag::log("agent terminal spawned OK");

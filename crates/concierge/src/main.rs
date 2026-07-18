@@ -379,14 +379,47 @@ fn sandbox_links(
     Ok(links)
 }
 
+/// Unconditional best-effort trace next to the executable, so `concierge`'s own
+/// startup and shell path are visible even when it can't see `CONCIERGE_LOG_DIR`
+/// (env not inherited by the child) or its stderr isn't reaching the terminal.
+fn cli_trace(msg: &str) {
+    use std::io::Write as _;
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    else {
+        return;
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("concierge-cli.log"))
+    {
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
+}
+
 fn main() {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let ldir = std::env::var("CONCIERGE_LOG_DIR").unwrap_or_default();
+    cli_trace(&format!(
+        "start · args={:?} · cwd={cwd} · CONCIERGE_LOG_DIR={ldir:?}",
+        std::env::args().collect::<Vec<_>>()
+    ));
     // Wire every family/leaf adapter crate into core's resolver before anything
     // resolves a game kind.
     concierge_games::register();
     if let Err(e) = run() {
+        cli_trace(&format!("run() returned error: {e}"));
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+    cli_trace("run() returned Ok");
 }
 
 /// Nexus entries with no recorded "ok" verdict in state/audit.json (keyed by
@@ -1088,12 +1121,14 @@ fn run() -> Result<()> {
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect();
             concierge::diag::event("cli", "spawn", &format!("running {}", argv.join(" ")));
+            cli_trace(&format!("shell: about to run: {}", argv.join(" ")));
             let status = c.status().map_err(|e| {
                 concierge::diag::event(
                     "cli",
                     "error",
                     &format!("shell process failed to start: {e}"),
                 );
+                cli_trace(&format!("shell: process failed to start: {e}"));
                 Error::Other(format!("sandboxed shell failed to start: {e}"))
             })?;
             concierge::diag::event(
@@ -1101,6 +1136,10 @@ fn run() -> Result<()> {
                 "exit",
                 &format!("sandbox process exited: code={:?}", status.code()),
             );
+            cli_trace(&format!(
+                "shell: sandbox process exited code={:?}",
+                status.code()
+            ));
             std::process::exit(status.code().unwrap_or(1));
         }
         Cmd::Undeploy { force } => {
