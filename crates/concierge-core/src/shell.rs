@@ -164,6 +164,7 @@ pub fn shell_command(
 /// bash can't lock their history file there ("zsh: locking failed"); redirect
 /// history to a writable per-session dir (under the temp allow-set) while still
 /// loading the user's own config. `$CONCIERGE_MOTD` is set by the caller.
+#[cfg(not(windows))]
 fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
     let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
     let base = Path::new(&sh)
@@ -226,6 +227,22 @@ fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
     (program, env)
 }
 
+/// Windows interactive shell: PowerShell ships with every Windows 10/11 and,
+/// unlike zsh under a read-only home, has no history-lock problem. The Windows
+/// sandbox bootstrap prints the MOTD and confines the process, so here we just
+/// drop into an interactive prompt (the user's PowerShell profile still loads).
+#[cfg(windows)]
+fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
+    (
+        vec![
+            "powershell.exe".to_owned(),
+            "-NoLogo".to_owned(),
+            "-NoExit".to_owned(),
+        ],
+        Vec::new(),
+    )
+}
+
 /// The greeting an interactive sandboxed shell prints on start — what the
 /// sandbox is, and that you can run your own AI assistant (claude/codex) inside
 /// it. Kept plain-ASCII-safe so it renders in any terminal.
@@ -284,7 +301,156 @@ fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command
     Ok(c)
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// The Windows sandbox: a PowerShell bootstrap that grants Low-integrity write
+/// on each allowed path (built-in `icacls`), prints the MOTD, then launches the
+/// inner program at Low integrity. Windows' Mandatory Integrity Control blocks a
+/// Low process from writing "up" to any Medium object, so everything NOT
+/// relabeled — the pristine game, the user's files, the whole machine — is
+/// read-only for free, mirroring the seatbelt/bwrap write-policy. Nothing to
+/// install (PowerShell + icacls ship with Windows); no Rust `unsafe` (the one
+/// privileged call lives in the bootstrap's embedded C#, shelled out to exactly
+/// like sandbox-exec / bwrap).
+#[cfg(windows)]
+fn sandboxed(ws: &WriteSet, offline: bool, program: &[String]) -> Result<Command> {
+    if offline {
+        // MIC does not gate network, so we can't honor an offline request here
+        // yet — refuse rather than silently run online.
+        return Err(Error::Other(
+            "offline sandbox is not supported on Windows yet (Low-integrity confinement \
+             does not cut off network)"
+                .into(),
+        ));
+    }
+    let script = std::env::temp_dir().join("concierge-sandbox.ps1");
+    std::fs::write(&script, windows_bootstrap())
+        .map_err(|e| Error::Other(format!("write sandbox bootstrap: {e}")))?;
+    // Only existing paths can be relabeled; a missing allow simply isn't
+    // writable, matching the seatbelt/bwrap treatment of absent paths.
+    let allow = ws
+        .allow
+        .iter()
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut c = Command::new("powershell.exe");
+    c.arg("-NoLogo")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&script)
+        .args(program)
+        .env("CONCIERGE_SB_ALLOW", allow);
+    Ok(c)
+}
+
+/// The fixed PowerShell bootstrap for the Windows sandbox. Values arrive via the
+/// environment (`CONCIERGE_SB_ALLOW`, `CONCIERGE_MOTD`) and as the script's own
+/// arguments (the inner program), so the text needs no interpolation — which
+/// keeps it free of path-escaping bugs and lets it be unit-tested verbatim.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_bootstrap() -> String {
+    // S-1-16-4096 is the Low mandatory-integrity SID. CreateRestrictedToken
+    // yields a token CreateProcessAsUser accepts WITHOUT SeAssignPrimaryTokenPrivilege
+    // (which standard users lack) — so a normal, non-admin user can spawn the
+    // Low-integrity child. The env block is passed through explicitly so the
+    // child inherits CONCIERGE_REPO / PATH / etc.
+    r#"$ErrorActionPreference = 'Continue'
+
+# Grant Low-integrity write on each allowed path. Everything NOT relabeled stays
+# Medium; MIC's no-write-up rule keeps it read-only for the Low child, so the
+# pristine game and the rest of the machine stay safe with no per-path deny.
+if ($env:CONCIERGE_SB_ALLOW) {
+  foreach ($p in ($env:CONCIERGE_SB_ALLOW -split "`n")) {
+    if ($p -and (Test-Path -LiteralPath $p)) {
+      & icacls $p /setintegritylevel '(OI)(CI)L' > $null 2>&1
+    }
+  }
+}
+
+if ($env:CONCIERGE_MOTD) { Write-Host $env:CONCIERGE_MOTD }
+
+$src = @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class ConciergeSB {
+  const uint TOKEN_DUPLICATE=0x0002, TOKEN_QUERY=0x0008, TOKEN_ASSIGN_PRIMARY=0x0001,
+             TOKEN_ADJUST_DEFAULT=0x0080, TOKEN_ADJUST_SESSIONID=0x0100;
+  const int TokenIntegrityLevel=25;
+  const uint SE_GROUP_INTEGRITY=0x00000020;
+  const uint CREATE_UNICODE_ENVIRONMENT=0x00000400;
+  const uint INFINITE=0xFFFFFFFF;
+
+  [StructLayout(LayoutKind.Sequential)] struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+  [StructLayout(LayoutKind.Sequential)] struct TOKEN_MANDATORY_LABEL { public SID_AND_ATTRIBUTES Label; }
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct STARTUPINFO {
+    public int cb; public string lpReserved, lpDesktop, lpTitle;
+    public int dwX,dwY,dwXSize,dwYSize,dwXCountChars,dwYCountChars,dwFillAttribute,dwFlags;
+    public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr GetCurrentProcess();
+  [DllImport("advapi32.dll", SetLastError=true)] static extern bool OpenProcessToken(IntPtr h, uint acc, out IntPtr tok);
+  [DllImport("advapi32.dll", SetLastError=true)] static extern bool CreateRestrictedToken(IntPtr tok, uint flags, uint dsc, IntPtr ds, uint dpc, IntPtr dp, uint rsc, IntPtr rs, out IntPtr newtok);
+  [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool ConvertStringSidToSid(string s, out IntPtr sid);
+  [DllImport("advapi32.dll", SetLastError=true)] static extern bool SetTokenInformation(IntPtr tok, int cls, IntPtr info, int len);
+  [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUser(IntPtr tok, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h, uint ms);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr h);
+  [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr h);
+
+  static IntPtr BuildEnv() {
+    var sb = new StringBuilder();
+    foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables())
+      sb.Append((string)e.Key).Append('=').Append((string)e.Value).Append('\0');
+    sb.Append('\0');
+    return Marshal.StringToHGlobalUni(sb.ToString());
+  }
+
+  public static int Run(string cmdline, string cwd) {
+    uint acc = TOKEN_DUPLICATE|TOKEN_QUERY|TOKEN_ASSIGN_PRIMARY|TOKEN_ADJUST_DEFAULT|TOKEN_ADJUST_SESSIONID;
+    IntPtr tok, restricted, sid;
+    if (!OpenProcessToken(GetCurrentProcess(), acc, out tok)) throw new Exception("OpenProcessToken " + Marshal.GetLastWin32Error());
+    if (!CreateRestrictedToken(tok, 0, 0, IntPtr.Zero, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted)) throw new Exception("CreateRestrictedToken " + Marshal.GetLastWin32Error());
+    if (!ConvertStringSidToSid("S-1-16-4096", out sid)) throw new Exception("ConvertStringSidToSid " + Marshal.GetLastWin32Error());
+    TOKEN_MANDATORY_LABEL tml = new TOKEN_MANDATORY_LABEL();
+    tml.Label.Sid = sid; tml.Label.Attributes = SE_GROUP_INTEGRITY;
+    int len = Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)) + (int)GetLengthSid(sid);
+    IntPtr pLabel = Marshal.AllocHGlobal(len);
+    Marshal.StructureToPtr(tml, pLabel, false);
+    if (!SetTokenInformation(restricted, TokenIntegrityLevel, pLabel, len)) throw new Exception("SetTokenInformation " + Marshal.GetLastWin32Error());
+    STARTUPINFO si = new STARTUPINFO(); si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+    PROCESS_INFORMATION pi;
+    IntPtr env = BuildEnv();
+    var cmd = new StringBuilder(cmdline);
+    if (!CreateProcessAsUser(restricted, null, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_UNICODE_ENVIRONMENT, env, cwd, ref si, out pi))
+      throw new Exception("CreateProcessAsUser " + Marshal.GetLastWin32Error());
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    uint code; GetExitCodeProcess(pi.hProcess, out code);
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread); CloseHandle(restricted); CloseHandle(tok);
+    Marshal.FreeHGlobal(pLabel); Marshal.FreeHGlobal(env); LocalFree(sid);
+    return (int)code;
+  }
+}
+'@
+Add-Type -TypeDefinition $src -Language CSharp
+
+# Rebuild the inner command line from this script's own arguments.
+$parts = @()
+foreach ($a in $args) {
+  if ($a -match '[\s"]') { $parts += '"' + ($a -replace '"', '\"') + '"' } else { $parts += $a }
+}
+exit [ConciergeSB]::Run(([string]::Join(' ', $parts)), (Get-Location).Path)
+"#
+    .to_owned()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn sandboxed(_ws: &WriteSet, _offline: bool, _program: &[String]) -> Result<Command> {
     Err(Error::Other(
         "no sandbox backend on this platform — refusing to run an agent shell unsandboxed".into(),
@@ -324,15 +490,23 @@ mod tests {
     fn interactive_shell_greets_with_the_sandbox_motd() {
         let (repo, plan) = fixture();
         let c = shell_command(&repo, &plan, None, false, &[], &[]).unwrap();
-        // The program wraps the shell: print $CONCIERGE_MOTD, then exec it.
         let args: Vec<String> = c
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
+        // The program wraps the shell: print $CONCIERGE_MOTD, then run it.
+        #[cfg(not(windows))]
         assert!(
             args.iter()
                 .any(|a| a.contains("CONCIERGE_MOTD") && a.contains("exec")),
             "the shell wrapper prints the MOTD then execs the shell: {args:?}"
+        );
+        // On Windows the wrapper is the PowerShell sandbox bootstrap, which
+        // prints $CONCIERGE_MOTD and confines the shell at Low integrity.
+        #[cfg(windows)]
+        assert!(
+            args.iter().any(|a| a.contains("concierge-sandbox.ps1")),
+            "the shell runs inside the PowerShell sandbox bootstrap: {args:?}"
         );
         // …and the MOTD explains the sandbox + that you can run claude/codex.
         let motd = c
@@ -353,6 +527,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn interactive_shell_redirects_history_off_the_read_only_home() {
         // The sandbox home is read-only, so pointing shell history there fails
         // to lock ("zsh: locking failed"). Whatever the user's $SHELL, the
@@ -394,6 +569,111 @@ mod tests {
         assert!(
             !args.iter().any(|a| a.contains("CONCIERGE_MOTD")),
             "no MOTD wrapper for an explicit agent"
+        );
+    }
+
+    // The Windows bootstrap is a fixed string, so its policy shape can be
+    // asserted on any host (the actual confinement is verified by the Windows CI
+    // smoke test, which spawns it on a real runner).
+    #[test]
+    fn windows_bootstrap_confines_via_low_integrity() {
+        let s = windows_bootstrap();
+        // Grants Low-integrity write only on the allowed paths…
+        assert!(
+            s.contains("CONCIERGE_SB_ALLOW") && s.contains("setintegritylevel"),
+            "relabels the allowed paths to Low integrity"
+        );
+        assert!(s.contains("(OI)(CI)L"), "Low label, inherited by children");
+        // …launches the child at the Low SID, without needing admin privilege…
+        assert!(s.contains("S-1-16-4096"), "Low mandatory-integrity SID");
+        assert!(
+            s.contains("CreateRestrictedToken") && s.contains("CreateProcessAsUser"),
+            "spawns the Low child with a restricted token (no admin privilege)"
+        );
+        // …and greets with the MOTD.
+        assert!(s.contains("CONCIERGE_MOTD"), "prints the sandbox MOTD");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_shell_runs_inside_the_low_integrity_bootstrap() {
+        let (repo, plan) = fixture();
+        let c = shell_command(&repo, &plan, None, false, &[], &[]).unwrap();
+        assert_eq!(
+            c.get_program().to_string_lossy().to_ascii_lowercase(),
+            "powershell.exe",
+            "the Windows sandbox shells out to PowerShell"
+        );
+        let args: Vec<String> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|a| a.contains("concierge-sandbox.ps1")),
+            "runs the sandbox bootstrap script: {args:?}"
+        );
+        // The allowed write-set is handed to the bootstrap via the environment.
+        assert!(
+            c.get_envs()
+                .any(|(k, _)| k == std::ffi::OsStr::new("CONCIERGE_SB_ALLOW")),
+            "the write-set is passed to the bootstrap"
+        );
+    }
+
+    // The real proof, run on a Windows CI runner: spawn the sandbox and confirm
+    // the Low child can write inside the write-set but is blocked from writing
+    // outside it. If the sandbox were broken (child at Medium integrity), the
+    // "forbidden" write would land and this fails.
+    #[test]
+    #[cfg(windows)]
+    fn windows_low_integrity_blocks_writes_outside_the_write_set() {
+        let (repo, plan) = fixture();
+        let pid = std::process::id();
+        // Allowed: inside the profile (granted + relabeled to Low).
+        let allowed = repo.profile.join(format!("sb-allowed-{pid}.txt"));
+        // Forbidden: the user-profile root — Medium integrity, not in the write-set.
+        let forbidden = crate::repo::home().join(format!("sb-forbidden-{pid}.txt"));
+        let _ = std::fs::remove_file(&allowed);
+        let _ = std::fs::remove_file(&forbidden);
+        let cmd = vec![
+            "powershell.exe".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NoLogo".to_owned(),
+            "-Command".to_owned(),
+            format!(
+                "Set-Content -LiteralPath '{a}' -Value ok -ErrorAction SilentlyContinue; \
+                 Set-Content -LiteralPath '{f}' -Value bad -ErrorAction SilentlyContinue",
+                a = allowed.display(),
+                f = forbidden.display()
+            ),
+        ];
+        let status = shell_command(&repo, &plan, None, false, &[], &cmd)
+            .unwrap()
+            .status()
+            .unwrap();
+        let allowed_written = allowed.exists();
+        let forbidden_written = forbidden.exists();
+        let _ = std::fs::remove_file(&allowed);
+        let _ = std::fs::remove_file(&forbidden); // clean up even if it leaked out
+        assert!(
+            allowed_written,
+            "the Low child can write inside the write-set (bootstrap status {status:?})"
+        );
+        assert!(
+            !forbidden_written,
+            "the Low child is blocked from writing outside the write-set"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_offline_is_refused_rather_than_run_online() {
+        // MIC does not gate network; an offline request must fail loudly, not
+        // silently run online.
+        let (repo, plan) = fixture();
+        assert!(
+            shell_command(&repo, &plan, None, true, &[], &[]).is_err(),
+            "offline sandbox is refused on Windows"
         );
     }
 
