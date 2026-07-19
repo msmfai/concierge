@@ -14,11 +14,18 @@ concierge-pluginorder = { path = "../concierge-pluginorder" }
 concierge-lint = { path = "../concierge-lint" }
 concierge-ai = { path = "../concierge-ai" }
 eframe = { version = "0.31", features = ["wgpu"] }
-portable-pty = "0.9"
 vt100 = "0.15"
 serde_json = "1.0.150"
 env_logger = "0.11"
 concierge-db = { version = "0.7.0", path = "../concierge-db" }
+
+# The embedded terminal's PTY backend. portable-pty's ConPTY delivers no child
+# output on Windows (verified in CI), so use the dedicated `conpty` crate there.
+[target.'cfg(not(windows))'.dependencies]
+portable-pty = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+conpty = "0.7"
 
 [dev-dependencies]
 # Drives the real App::update through egui's AccessKit tree (semantic queries)
