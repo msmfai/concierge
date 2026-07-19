@@ -467,24 +467,31 @@ public static class ConciergeSB {
 }
 '@
   Add-Type -TypeDefinition $src -Language CSharp
-  CgTrace 'droptolow' 'lowering this session to Low integrity'
-  [ConciergeSB]::DropToLow()
-  CgTrace 'lowered' 'this session is now Low integrity'
 } catch {
   CgTrace 'error' ('bootstrap failed: ' + $_.Exception.Message)
   Write-Host ('Concierge sandbox error: ' + $_.Exception.Message)
 }
 
-# A given command runs Low, then the session exits with its code. Otherwise
-# -NoExit drops you into the interactive Low-integrity prompt.
+# A given command runs Low, then the session exits with its code. Lowering the
+# process integrity is safe here (no interactive console to drive).
 if ($args.Count -gt 0) {
+  try { [ConciergeSB]::DropToLow(); CgTrace 'droptolow' 'lowered for command' }
+  catch { CgTrace 'error' ('DropToLow failed: ' + $_.Exception.Message) }
   CgTrace 'run' ('running: ' + ($args -join ' '))
   if ($args.Count -gt 1) { & $args[0] @($args[1..($args.Count - 1)]) }
   else { & $args[0] }
   CgTrace 'done' ('exit ' + $LASTEXITCODE)
   exit $LASTEXITCODE
 }
-CgTrace 'interactive' 'reached interactive handoff (-NoExit should keep this prompt open)'
+# Interactive prompt. NOTE: self-lowering a LIVE interactive PowerShell breaks
+# its console (it can't drive the Medium-created ConPTY and exits), so the
+# interactive shell stays Medium for now while per-agent Low confinement is
+# wired up. -NoExit keeps this prompt open.
+CgTrace 'interactive' 'interactive prompt (Medium; agent confinement being finalized)'
+Write-Host ''
+Write-Host '  [confinement note] the interactive shell is not yet write-restricted;'
+Write-Host '  per-agent Low-integrity confinement is being finalized. Do not run'
+Write-Host '  untrusted agents against a real game install yet.'
 "#
     .to_owned()
 }
