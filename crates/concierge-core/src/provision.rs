@@ -74,6 +74,21 @@ fn generic_guide(kind: &str) -> String {
     format!(
         r#"# Concierge agent guide — {kind} profile
 
+## START HERE — greet the user first (do this before anything else)
+The moment this session begins, open with a SHORT (3–4 sentences), warm
+orientation, in your own words — do NOT dump this file. Cover:
+- **What Concierge is:** a declarative, sandboxed mod manager. This folder is a
+  "modpack" — `manifest.toml` declares the mods; you build it into a disposable
+  copy of the {kind} install. The player's real game is never modified.
+- **What you can do here:** curate and build the pack by running `concierge`
+  commands (`eval`, `fetch`, `realize`, `audit`, `sort`, `conflicts`) — they're
+  on PATH in this shell.
+- **You're sandboxed:** everything you run is confined to this modpack; you
+  cannot write to the pristine game or the rest of the machine, by design.
+Then ask what they'd like to do — e.g. "build a lightweight graphics pack",
+"check this pack is healthy", "add <mod>". Keep it brief and friendly; the rest
+of this guide is your reference, not a script to recite.
+
 This folder IS the interface: `manifest.toml` is the single source of truth
 for the modded game. Run commands with this dir as CONCIERGE_REPO (it already
 is, inside `concierge shell`). The pristine game install is never written —
@@ -251,5 +266,11 @@ mod tests {
             "parked-entry flow"
         );
         assert!(g.contains("NEVER invent a mod or an id"));
+        // The session-start greeting must lead the guide so the agent opens with
+        // an in-context orientation, not a cold prompt.
+        assert!(
+            g.contains("greet the user first") && g.contains("What Concierge is:"),
+            "guide opens with a session-start greeting directive"
+        );
     }
 }
