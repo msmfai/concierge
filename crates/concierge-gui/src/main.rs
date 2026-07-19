@@ -3220,12 +3220,83 @@ impl App {
                 )),
                 Err(e) => diag::log(&format!("PREFLIGHT spawn error: {e}")),
             }
+
+            // Falsify the PTY-mechanism hypotheses INDEPENDENTLY of the sandbox:
+            // does portable-pty's ConPTY render (1) any output at all, and (2) an
+            // INTERACTIVE PowerShell that stays alive? If probe 2 shows nothing or
+            // finished=true, the embedded terminal itself can't host an interactive
+            // shell on this Windows — that's the bug, not the sandbox. Results go to
+            // the top-level log (reliably synced). ~3s UI pause on the diag build.
+            let probes: [(&str, Vec<String>); 3] = [
+                (
+                    "cmd-echo",
+                    vec![
+                        "cmd.exe".into(),
+                        "/c".into(),
+                        "echo CONCIERGE-CMD-ALIVE".into(),
+                    ],
+                ),
+                (
+                    "ps-write",
+                    vec![
+                        "powershell.exe".into(),
+                        "-NoLogo".into(),
+                        "-NoProfile".into(),
+                        "-Command".into(),
+                        "Write-Host CONCIERGE-PS-WRITE".into(),
+                    ],
+                ),
+                (
+                    "ps-interactive",
+                    vec![
+                        "powershell.exe".into(),
+                        "-NoLogo".into(),
+                        "-NoProfile".into(),
+                        "-NoExit".into(),
+                        "-Command".into(),
+                        "Write-Host CONCIERGE-PS-INTERACTIVE".into(),
+                    ],
+                ),
+            ];
+            for (label, probe) in probes {
+                match terminal::PtyTerminal::spawn(&probe, &cwd, &[], 40, 100, None) {
+                    Ok(t) => {
+                        std::thread::sleep(std::time::Duration::from_millis(1200));
+                        let finished = t.finished();
+                        let grid: Vec<String> = t
+                            .text_rows()
+                            .into_iter()
+                            .filter(|r| !r.trim().is_empty())
+                            .collect();
+                        diag::log(&format!(
+                            "PTYPROBE[{label}] finished={finished} grid={grid:?}"
+                        ));
+                        t.kill();
+                    }
+                    Err(e) => diag::log(&format!("PTYPROBE[{label}] spawn error: {e}")),
+                }
+            }
         }
         let transcript = session.join("terminal.raw");
         match terminal::PtyTerminal::spawn(&program, &cwd, &env, 40, 100, Some(transcript)) {
             Ok(t) => {
                 concierge::diag::event("gui", "spawned", "PTY spawn OK");
                 diag::log("agent terminal spawned OK");
+                // Capture the REAL sandbox terminal's state directly in the
+                // top-level log (the session-folder transcript sometimes lags in
+                // sync): did it stay alive, and what did it render?
+                if cfg!(windows) {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    let finished = t.finished();
+                    let grid: Vec<String> = t
+                        .text_rows()
+                        .into_iter()
+                        .filter(|r| !r.trim().is_empty())
+                        .collect();
+                    diag::log(&format!(
+                        "REAL-TERMINAL after 1.5s: finished={finished} grid={grid:?}"
+                    ));
+                }
                 self.term = Some(t);
                 self.term_epoch = 0;
                 self.ai_visible = true;
