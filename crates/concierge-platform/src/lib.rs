@@ -88,6 +88,14 @@ pub fn open_url(target: &str) -> std::io::Result<std::process::ExitStatus> {
         // `start` is a cmd builtin; the empty "" is the window-title arg.
         let mut c = std::process::Command::new("cmd");
         c.args(["/C", "start", "", target]);
+        // Without this, a GUI (windows-subsystem) parent spawning `cmd` gets a
+        // fresh console allocated — a blank cmd window flashes on every URL open.
+        // CREATE_NO_WINDOW (0x0800_0000) suppresses it. Safe API, no `unsafe`.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            c.creation_flags(0x0800_0000);
+        }
         c
     } else {
         let mut c = std::process::Command::new("xdg-open");
