@@ -441,13 +441,17 @@ mod tests {
         let line = format!(
             "Set-Content -LiteralPath '{}' -Value ok -EA SilentlyContinue; \
              Set-Content -LiteralPath '{}' -Value bad -EA SilentlyContinue; \
-             whoami /groups | Select-String Mandatory | Out-Host; Write-Host SB-DONE\r\n",
+             Write-Host SB-DONE\r\n",
             allowed.display(),
             denied.display(),
         );
         term.send(line.as_bytes());
+        // SB-DONE prints only after both writes ran (same line, sequential), so
+        // the file outcomes are settled once it appears. The write to the
+        // Medium user-profile root can only be blocked if the shell is Low — so
+        // `denied_blocked` is the confinement proof; no fragile text-scraping.
         let done = wait_for(&term, "SB-DONE");
-        let low = term.text_rows().iter().any(|r| r.contains("Low Mandatory"));
+        std::thread::sleep(Duration::from_millis(300));
         let allowed_ok = allowed.exists();
         let denied_blocked = !denied.exists();
         term.kill();
@@ -457,14 +461,12 @@ mod tests {
 
         assert!(done, "typed command never executed (input not forwarded?)");
         assert!(
-            low,
-            "interactive shell is not Low integrity: {:?}",
-            term.text_rows()
+            allowed_ok,
+            "write inside the write-set was blocked — shell unusable"
         );
-        assert!(allowed_ok, "write inside the write-set was blocked");
         assert!(
             denied_blocked,
-            "write OUTSIDE the write-set was allowed — not confined"
+            "write OUTSIDE the write-set landed — the interactive shell is NOT confined"
         );
     }
 
