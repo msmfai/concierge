@@ -395,11 +395,6 @@ struct App {
     /// running in the concierge-shell sandbox for the active profile.
     term: Option<terminal::PtyTerminal>,
     term_epoch: u64,
-    /// Windows only: the sandboxed shell runs in an EXTERNAL console window (the
-    /// embedded terminal can't render there), so the agent pane is a thin manager
-    /// over this child process — track it, show status, end it.
-    #[cfg(windows)]
-    win_shell: Option<std::process::Child>,
     central_tab: CentralTab,
     dark: bool,
     ai_visible: bool,
@@ -534,8 +529,6 @@ impl App {
             edit: None,
             term: None,
             term_epoch: 0,
-            #[cfg(windows)]
-            win_shell: None,
             central_tab: CentralTab::Declaration,
             dark: true,
             ai_visible: true,
@@ -3202,63 +3195,26 @@ impl App {
                 cwd.display()
             ),
         );
-        // Windows: the embedded ConPTY terminal delivers NO child output at all
-        // (verified — even `cmd /c echo` renders an empty grid), so launch the
-        // sandboxed PowerShell in a REAL external console window, which renders
-        // natively. Elsewhere, keep the embedded terminal.
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
-            let Some((exe, args)) = program.split_first() else {
-                self.error = Some("empty sandbox command".to_owned());
-                return;
-            };
-            let mut c = std::process::Command::new(exe);
-            c.args(args).current_dir(&cwd);
-            for (k, v) in &env {
-                c.env(k, v);
+        // Embedded terminal on every platform (the Windows backend is `conpty`,
+        // which — unlike portable-pty's ConPTY — actually renders child output).
+        let transcript = session.join("terminal.raw");
+        match terminal::PtyTerminal::spawn(&program, &cwd, &env, 40, 100, Some(transcript)) {
+            Ok(t) => {
+                concierge::diag::event("gui", "spawned", "PTY spawn OK");
+                diag::log("agent terminal spawned OK");
+                self.term = Some(t);
+                self.term_epoch = 0;
+                self.ai_visible = true;
             }
-            c.creation_flags(CREATE_NEW_CONSOLE);
-            match c.spawn() {
-                Ok(child) => {
-                    diag::log("opened sandboxed shell in a new console window");
-                    concierge::diag::event("gui", "spawned", "external console opened");
-                    // End any previous session, then track this one so the pane
-                    // can manage it (status / end).
-                    if let Some(mut old) = self.win_shell.take() {
-                        let _ = old.kill();
-                    }
-                    self.win_shell = Some(child);
-                    self.ai_visible = true;
-                }
-                Err(e) => {
-                    diag::log(&format!("external console spawn failed: {e}"));
-                    self.error = Some(format!("Couldn't open the sandboxed shell window: {e}"));
-                }
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            let transcript = session.join("terminal.raw");
-            match terminal::PtyTerminal::spawn(&program, &cwd, &env, 40, 100, Some(transcript)) {
-                Ok(t) => {
-                    concierge::diag::event("gui", "spawned", "PTY spawn OK");
-                    diag::log("agent terminal spawned OK");
-                    self.term = Some(t);
-                    self.term_epoch = 0;
-                    self.ai_visible = true;
-                }
-                Err(e) => {
-                    concierge::diag::event("gui", "error", &format!("PTY spawn failed: {e}"));
-                    diag::log(&format!("agent terminal FAILED to start: {e}"));
-                    self.log
-                        .push(format!("agent terminal failed to start: {e}"));
-                    self.error = Some(format!(
-                        "The sandboxed shell failed to start: {e}\n(details in {})",
-                        session.display()
-                    ));
-                }
+            Err(e) => {
+                concierge::diag::event("gui", "error", &format!("PTY spawn failed: {e}"));
+                diag::log(&format!("agent terminal FAILED to start: {e}"));
+                self.log
+                    .push(format!("agent terminal failed to start: {e}"));
+                self.error = Some(format!(
+                    "The sandboxed shell failed to start: {e}\n(details in {})",
+                    session.display()
+                ));
             }
         }
     }
@@ -3302,63 +3258,6 @@ impl App {
     /// The AI assistant as a VSCode-style right-hand column: a header + quick
     /// actions on top, the input pinned at the bottom, the chat transcript
     /// filling the middle.
-    /// Windows agent pane: a thin manager over the external sandboxed-shell
-    /// window (the embedded terminal can't render on Windows). Shows session
-    /// status and lets you end it or open another.
-    #[cfg(windows)]
-    fn windows_shell_manager(&mut self, ui: &mut eframe::egui::Ui) {
-        use eframe::egui;
-        // Reap the child if the window was closed.
-        let running = matches!(
-            self.win_shell.as_mut().map(std::process::Child::try_wait),
-            Some(Ok(None))
-        );
-        if !running {
-            self.win_shell = None;
-        }
-        ui.add_space(8.0);
-        if running {
-            ui.colored_label(
-                egui::Color32::from_rgb(150, 200, 150),
-                "● Sandboxed shell running in a separate PowerShell window",
-            );
-            ui.add_space(4.0);
-            ui.weak(
-                "That separate window is your terminal (the in-app terminal can't render on \
-                 Windows). Run `opencode`, `codex`, or `claude` there — the profile carries \
-                 CLAUDE.md + AGENTS.md and the slash-commands.",
-            );
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.button("End session").clicked() {
-                    if let Some(mut c) = self.win_shell.take() {
-                        let _ = c.kill();
-                    }
-                }
-                if ui.button("Open another window").clicked() {
-                    self.start_agent_terminal();
-                }
-            });
-        } else {
-            if ui.button("Open sandboxed shell").clicked() {
-                self.start_agent_terminal();
-            }
-            ui.add_space(6.0);
-            ui.weak(
-                "Opens a sandboxed PowerShell in a separate window; this pane manages the \
-                 session. Start your AI coding agent there — `opencode`, `codex`, or `claude` \
-                 — with CLAUDE.md + AGENTS.md and the slash-commands already in the profile.",
-            );
-            if !self.agent_available {
-                ui.add_space(6.0);
-                ui.colored_label(
-                    egui::Color32::from_rgb(220, 170, 90),
-                    "Tip: install one of `opencode`, `codex`, or `claude` to run an AI agent.",
-                );
-            }
-        }
-    }
-
     /// The agent view: an embedded terminal running the user's real agent in
     /// the sandbox. When no session is running, an affordance to
     /// start one; otherwise the live PTY grid with keystroke forwarding.
@@ -3400,47 +3299,40 @@ impl App {
                 });
 
                 egui::CentralPanel::default().show_inside(ui, |ui| {
-                    // On Windows the shell runs in an external window; this pane is
-                    // a thin manager over it. Elsewhere it's the embedded terminal.
-                    #[cfg(windows)]
-                    self.windows_shell_manager(ui);
-                    #[cfg(not(windows))]
-                    {
-                        let running = self.term.as_ref().is_some_and(|t| !t.finished());
-                        if self.term.is_none() {
-                            ui.add_space(8.0);
-                            if ui.button("Open sandboxed shell").clicked() {
-                                self.start_agent_terminal();
-                            }
+                    let running = self.term.as_ref().is_some_and(|t| !t.finished());
+                    if self.term.is_none() {
+                        ui.add_space(8.0);
+                        if ui.button("Open sandboxed shell").clicked() {
+                            self.start_agent_terminal();
+                        }
+                        ui.add_space(6.0);
+                        ui.weak(
+                            "A terminal sandboxed to Concierge in this modpack. Start your AI \
+                             coding agent in it — `opencode`, `codex`, or `claude` — and it \
+                             builds the pack for you, confined to this modpack, never your \
+                             machine. The profile carries CLAUDE.md + AGENTS.md and the \
+                             slash-commands (/health, /curate, /sort, /conflicts, /audit-ids), \
+                             so any agent already knows the tools.",
+                        );
+                        if !self.agent_available {
                             ui.add_space(6.0);
-                            ui.weak(
-                                "A terminal sandboxed to Concierge in this modpack. Start your AI \
-                                 coding agent in it — `opencode`, `codex`, or `claude` — and it \
-                                 builds the pack for you, confined to this modpack, never your \
-                                 machine. The profile carries CLAUDE.md + AGENTS.md and the \
-                                 slash-commands (/health, /curate, /sort, /conflicts, /audit-ids), \
-                                 so any agent already knows the tools.",
-                            );
-                            if !self.agent_available {
-                                ui.add_space(6.0);
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(220, 170, 90),
-                                    "Tip: install one of `opencode`, `codex`, or `claude` to run \
-                                     an AI agent here — the terminal itself works without them.",
-                                );
-                            }
-                            return;
-                        }
-                        if running {
-                            self.forward_terminal_input(ui, ctx);
-                        } else {
                             ui.colored_label(
-                                egui::Color32::from_rgb(150, 190, 150),
-                                "agent session ended — Close to dismiss, or start a new one",
+                                egui::Color32::from_rgb(220, 170, 90),
+                                "Tip: install one of `opencode`, `codex`, or `claude` to run an \
+                                 AI agent here — the terminal itself works without them.",
                             );
                         }
-                        self.render_terminal(ui);
+                        return;
                     }
+                    if running {
+                        self.forward_terminal_input(ui, ctx);
+                    } else {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(150, 190, 150),
+                            "agent session ended — Close to dismiss, or start a new one",
+                        );
+                    }
+                    self.render_terminal(ui);
                 });
             });
     }
