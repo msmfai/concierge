@@ -93,6 +93,11 @@ impl PtyTerminal {
                 command.arg(a);
             }
             command.current_dir(cwd);
+            // conpty passes ONLY the Command's explicit env to CreateProcess (it
+            // does NOT inherit the parent environment), so seed the full current
+            // environment first — otherwise PowerShell launches without
+            // SystemRoot/PATH and the .NET CLR fails to load ("error 8009001d").
+            command.envs(std::env::vars_os());
             for (k, v) in env {
                 command.env(k, v);
             }
@@ -345,6 +350,9 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn pty_windows_renders_interactive_powershell() {
+        // Pass env vars like the real GUI does — conpty builds the child env from
+        // ONLY the explicit vars, so this reproduces the "SystemRoot missing → CLR
+        // fails to load (8009001d)" bug unless the full env is seeded first.
         let term = PtyTerminal::spawn(
             &[
                 "powershell.exe".into(),
@@ -355,7 +363,7 @@ mod tests {
                 "Write-Host CONCIERGE-PS-MARKER".into(),
             ],
             std::path::Path::new("."),
-            &[],
+            &[("CONCIERGE_TEST".to_owned(), "1".to_owned())],
             24,
             80,
             None,
