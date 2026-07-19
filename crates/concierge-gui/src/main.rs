@@ -3195,6 +3195,32 @@ impl App {
                 cwd.display()
             ),
         );
+        // Windows pre-flight: the interactive terminal loses PowerShell's own
+        // startup errors (parse / AMSI-block / Add-Type failure) to the console
+        // screen-clear. Run the SAME command once non-interactively with captured
+        // stdout+stderr and write it to the (reliably-synced) top-level log — so a
+        // silent failure is finally visible verbatim.
+        if cfg!(windows) {
+            let mut pf = std::process::Command::new(
+                program.first().map_or("powershell.exe", String::as_str),
+            );
+            for a in program.iter().skip(1).filter(|a| a.as_str() != "-NoExit") {
+                pf.arg(a);
+            }
+            pf.current_dir(&cwd);
+            for (k, v) in &env {
+                pf.env(k, v);
+            }
+            match pf.output() {
+                Ok(out) => diag::log(&format!(
+                    "PREFLIGHT exit={:?}\n---stdout---\n{}\n---stderr---\n{}\n---end preflight---",
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr),
+                )),
+                Err(e) => diag::log(&format!("PREFLIGHT spawn error: {e}")),
+            }
+        }
         let transcript = session.join("terminal.raw");
         match terminal::PtyTerminal::spawn(&program, &cwd, &env, 40, 100, Some(transcript)) {
             Ok(t) => {
