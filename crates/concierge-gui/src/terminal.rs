@@ -6,21 +6,25 @@
 //! keystrokes; nothing about the agent protocol is reimplemented — permission
 //! prompts, plan mode, and skills all come from the real harness.
 
-use std::io::{Read as _, Write};
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
-use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
-
-/// A live PTY session: a child process whose output feeds a vt100 screen.
+/// A live PTY session: a child process whose output feeds a `vt100` screen. The
+/// PTY backend is portable-pty on Unix and the dedicated `conpty` crate on
+/// Windows (portable-pty's `ConPTY` delivers no output there — verified in CI).
 pub struct PtyTerminal {
     parser: Arc<Mutex<vt100::Parser>>,
     writer: Box<dyn Write + Send>,
-    master: Box<dyn MasterPty + Send>,
-    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     rows: u16,
     cols: u16,
     /// Bumped by the reader thread on new output so the UI knows to repaint.
     dirty: Arc<std::sync::atomic::AtomicU64>,
+    #[cfg(not(windows))]
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    #[cfg(not(windows))]
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    #[cfg(windows)]
+    proc: Arc<Mutex<conpty::Process>>,
 }
 
 impl PtyTerminal {
@@ -28,6 +32,7 @@ impl PtyTerminal {
     /// When `log` is set, every byte the child prints is also appended there —
     /// so a terminal that renders blank or closes instantly can still be
     /// diagnosed from the transcript afterwards.
+    #[allow(clippy::type_complexity)] // the backend tuple is documented inline
     pub fn spawn(
         cmd: &[String],
         cwd: &std::path::Path,
@@ -36,44 +41,112 @@ impl PtyTerminal {
         cols: u16,
         log: Option<std::path::PathBuf>,
     ) -> std::io::Result<Self> {
-        let pty = portable_pty::native_pty_system();
-        let pair = pty
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(std::io::Error::other)?;
-        let mut builder = CommandBuilder::new(cmd.first().map_or("/bin/sh", |s| s));
-        for a in cmd.iter().skip(1) {
-            builder.arg(a);
-        }
-        builder.cwd(cwd);
-        for (k, v) in env {
-            builder.env(k, v);
-        }
-        let child = pair
-            .slave
-            .spawn_command(builder)
-            .map_err(std::io::Error::other)?;
-        drop(pair.slave); // we hold only the master end
-
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 2000)));
-        let writer = pair.master.take_writer().map_err(std::io::Error::other)?;
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(std::io::Error::other)?;
         let dirty = Arc::new(std::sync::atomic::AtomicU64::new(0));
 
-        let p = Arc::clone(&parser);
-        let d = Arc::clone(&dirty);
-        // Optional transcript: truncate on open so it holds only this session.
+        #[cfg(not(windows))]
+        let (reader, writer, master, child): (
+            Box<dyn Read + Send>,
+            Box<dyn Write + Send>,
+            Box<dyn portable_pty::MasterPty + Send>,
+            Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+        ) = {
+            use portable_pty::{CommandBuilder, PtySize};
+            let pair = portable_pty::native_pty_system()
+                .openpty(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(std::io::Error::other)?;
+            let mut builder = CommandBuilder::new(cmd.first().map_or("/bin/sh", |s| s));
+            for a in cmd.iter().skip(1) {
+                builder.arg(a);
+            }
+            builder.cwd(cwd);
+            for (k, v) in env {
+                builder.env(k, v);
+            }
+            let child = pair
+                .slave
+                .spawn_command(builder)
+                .map_err(std::io::Error::other)?;
+            drop(pair.slave); // we hold only the master end
+            let reader = pair
+                .master
+                .try_clone_reader()
+                .map_err(std::io::Error::other)?;
+            let writer = pair.master.take_writer().map_err(std::io::Error::other)?;
+            (reader, writer, pair.master, Arc::new(Mutex::new(child)))
+        };
+
+        #[cfg(windows)]
+        let (reader, writer, proc): (
+            Box<dyn Read + Send>,
+            Box<dyn Write + Send>,
+            Arc<Mutex<conpty::Process>>,
+        ) = {
+            let mut command =
+                std::process::Command::new(cmd.first().map_or("cmd.exe", String::as_str));
+            for a in cmd.iter().skip(1) {
+                command.arg(a);
+            }
+            command.current_dir(cwd);
+            for (k, v) in env {
+                command.env(k, v);
+            }
+            let mut proc = conpty::Process::spawn(command)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let _ = proc.resize(
+                i16::try_from(cols).unwrap_or(80),
+                i16::try_from(rows).unwrap_or(24),
+            );
+            let reader = proc
+                .output()
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            let writer = proc
+                .input()
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+            (
+                Box::new(reader),
+                Box::new(writer),
+                Arc::new(Mutex::new(proc)),
+            )
+        };
+
+        Self::pump(reader, &parser, &dirty, log, cmd.join(" "));
+
+        Ok(Self {
+            parser,
+            writer,
+            rows,
+            cols,
+            dirty,
+            #[cfg(not(windows))]
+            master,
+            #[cfg(not(windows))]
+            child,
+            #[cfg(windows)]
+            proc,
+        })
+    }
+
+    /// Reader thread: pump child output into the vt100 screen (+ optional
+    /// transcript), bumping `dirty` so the UI repaints. Backend-agnostic.
+    fn pump(
+        mut reader: Box<dyn Read + Send>,
+        parser: &Arc<Mutex<vt100::Parser>>,
+        dirty: &Arc<std::sync::atomic::AtomicU64>,
+        log: Option<std::path::PathBuf>,
+        cmdline: String,
+    ) {
+        let p = Arc::clone(parser);
+        let d = Arc::clone(dirty);
         let mut transcript = log.and_then(|path| {
             std::fs::File::create(&path)
                 .map(|mut f| {
-                    let _ = writeln!(f, "$ {}\n", cmd.join(" "));
+                    let _ = writeln!(f, "$ {cmdline}\n");
                     f
                 })
                 .ok()
@@ -98,16 +171,6 @@ impl PtyTerminal {
             }
             d.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
-
-        Ok(Self {
-            parser,
-            writer,
-            master: pair.master,
-            child: Arc::new(Mutex::new(child)),
-            rows,
-            cols,
-            dirty,
-        })
     }
 
     /// Forward user input bytes to the child.
@@ -130,12 +193,21 @@ impl PtyTerminal {
         }
         self.rows = rows;
         self.cols = cols;
-        let _ = self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
+        #[cfg(not(windows))]
+        {
+            let _ = self.master.resize(portable_pty::PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+        #[cfg(windows)]
+        if let (Ok(mut p), Ok(x), Ok(y)) =
+            (self.proc.lock(), i16::try_from(cols), i16::try_from(rows))
+        {
+            let _ = p.resize(x, y);
+        }
         if let Ok(mut p) = self.parser.lock() {
             p.set_size(rows, cols);
         }
@@ -169,18 +241,31 @@ impl PtyTerminal {
     }
 
     /// Has the child exited?
+    #[must_use]
     pub fn finished(&self) -> bool {
-        self.child
-            .lock()
-            .ok()
-            .and_then(|mut c| c.try_wait().ok())
-            .is_some_and(|s| s.is_some())
+        #[cfg(not(windows))]
+        {
+            self.child
+                .lock()
+                .ok()
+                .and_then(|mut c| c.try_wait().ok())
+                .is_some_and(|s| s.is_some())
+        }
+        #[cfg(windows)]
+        {
+            self.proc.lock().map_or(true, |p| !p.is_alive())
+        }
     }
 
     /// Kill the child (the interrupt affordance).
     pub fn kill(&self) {
+        #[cfg(not(windows))]
         if let Ok(mut c) = self.child.lock() {
             let _ = c.kill();
+        }
+        #[cfg(windows)]
+        if let Ok(mut p) = self.proc.lock() {
+            let _ = p.exit(0);
         }
     }
 }
