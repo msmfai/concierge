@@ -481,6 +481,12 @@ struct App {
     browse_open: bool,
     /// The Wabbajack-style guided download queue window.
     download_session_open: bool,
+    /// Last-logged window focus / minimise / download-popup state, so we can log
+    /// only the TRANSITIONS (a window minimise/reopen or the popup vanishing is
+    /// then visible in the synced-back log, timestamped against the clicks).
+    diag_focused: Option<bool>,
+    diag_minimized: Option<bool>,
+    diag_popup_open: bool,
     browse_query: String,
     nxm_input: String,
     nexus_account: Arc<std::sync::Mutex<String>>,
@@ -610,6 +616,9 @@ impl App {
             preview_lines: Vec::new(),
             browse_open: false,
             download_session_open: false,
+            diag_focused: None,
+            diag_minimized: None,
+            diag_popup_open: false,
             browse_query: String::new(),
             nxm_input: String::new(),
             nexus_account: Arc::new(std::sync::Mutex::new(String::new())),
@@ -1072,6 +1081,9 @@ impl App {
     /// behaviour. Every projected widget renders FROM the screen and calls this —
     /// so App mutates ONLY through here, never from a hand-coded widget.
     fn dispatch_intent(&mut self, id: &str) {
+        // Every user action is logged by its stable id, so a synced-back log
+        // shows the EXACT click sequence — no more inferring what was pressed.
+        diag::log(&format!("click: {id}"));
         match id {
             // action bar
             "download" => self.run_action("download", Action::Fetch),
@@ -1869,6 +1881,12 @@ fn run_blocking(
         Action::Fetch => {
             use concierge::store::FetchOutcome as F;
             let manifest_path = repo.profile.join("manifest.toml");
+            // Records whether Download itself may open browser tabs — so the log
+            // proves whether a page-open came from here or from a panel button.
+            diag::log(&format!(
+                "fetch: auto_open_browser={} (GUI should be false — Download must NOT open tabs)",
+                concierge::store::auto_open_browser_enabled()
+            ));
             let results = concierge::store::fetch_all(repo, plan)?;
             let total = results.len();
             let (mut cached, mut downloaded) = (0usize, 0usize);
@@ -2391,6 +2409,32 @@ impl App {
     /// without an `eframe::Frame`. (visual-testing dossier item 2)
     fn update_ctx(&mut self, ctx: &eframe::egui::Context) {
         use eframe::egui;
+        // Log window focus / minimise transitions — a nxm one-click launching the
+        // handler can steal focus or minimise/restore the window on Windows, and
+        // this makes that visible in the log, timestamped against the clicks.
+        let (focused, minimized) = ctx.input(|i| {
+            let vp = i.viewport();
+            (vp.focused, vp.minimized)
+        });
+        if focused != self.diag_focused {
+            diag::log(&format!("window: focused={focused:?}"));
+            self.diag_focused = focused;
+        }
+        if minimized != self.diag_minimized {
+            diag::log(&format!("window: minimized={minimized:?}"));
+            self.diag_minimized = minimized;
+        }
+        if self.download_session_open != self.diag_popup_open {
+            diag::log(&format!(
+                "download popup: {}",
+                if self.download_session_open {
+                    "opened"
+                } else {
+                    "closed"
+                }
+            ));
+            self.diag_popup_open = self.download_session_open;
+        }
         // nxm handoff: pin any links dropped in the inbox (browser download /
         // `concierge nxm <url>` reaching this running instance). Poll ~1/s even
         // when idle so a launcher-handed-off download appears promptly.
@@ -3934,12 +3978,12 @@ impl App {
                 ui.separator();
                 ui.strong("Nexus Mods");
                 ui.label(
-                    "Automatic in-app downloads from Nexus need Nexus Premium (paid). A \
-                     personal API key — free to create at nexusmods.com \u{2192} Account \
-                     Settings \u{2192} API Keys — lets Concierge identify you and look mods \
-                     up; paste it here. Without Premium you can still mod: on a mod's Nexus \
-                     page use \"Mod Manager Download\" (or download the file), drop it in \
-                     your Downloads folder, then Apply \u{2014} no key or Premium needed.",
+                    "Paste a Nexus API key to download mods. A personal key is FREE to create \
+                     at nexusmods.com \u{2192} Account Settings \u{2192} API Keys, and a free key \
+                     is enough for 1-click (\"Mod Manager Download\") downloads on a free \
+                     account. Nexus Premium (paid) is only needed for fully-automatic fetching \
+                     with no per-file click. Either way you can also just download a file to \
+                     your Downloads folder and Apply \u{2014} no key needed for that.",
                 );
                 ui.horizontal(|ui| {
                     ui.add(
@@ -4328,6 +4372,10 @@ impl App {
         let have = total - needed.len();
         let pct = have.saturating_mul(100).checked_div(total).unwrap_or(0);
         let frac = f32::from(u16::try_from(pct.min(100)).unwrap_or(0)) / 100.0;
+        // The ACTUAL reason a 1-click download "does nothing": no Nexus API key.
+        // Surface it here (not just in the log) with a one-click path to fix it.
+        let has_key = concierge::nexus::api_key().is_ok();
+        let mut open_settings = false;
         egui::Window::new("Download session")
             .open(&mut open)
             .resizable(true)
@@ -4336,10 +4384,33 @@ impl App {
                 ui.add(
                     egui::ProgressBar::new(frac).text(format!("{have} of {total} mods downloaded")),
                 );
+                if !has_key {
+                    egui::Frame::new()
+                        .fill(egui::Color32::from_rgb(80, 40, 40))
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .corner_radius(4)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(
+                                    "\u{26a0} No Nexus API key set — 1-click downloads won't run.",
+                                )
+                                .strong()
+                                .color(egui::Color32::from_rgb(245, 180, 180)),
+                            );
+                            ui.label(
+                                "Create a FREE key at nexusmods.com \u{2192} Account \u{2192} API \
+                                 Keys and paste it in Settings. (A free key is enough for 1-click \
+                                 downloads — Premium is only for fully-automatic fetching.)",
+                            );
+                            if ui.button("Open Settings").clicked() {
+                                open_settings = true;
+                            }
+                        });
+                }
                 ui.small(
-                    "Free account? Turn on \"Enable 1-click downloads\" in Settings first. \
-                     Then click \"Mod Manager Download\" on each page below — the file lands \
-                     here, is checksum-verified, and drops off this list.",
+                    "Click \"Open Nexus page\" on a mod below, then \"Mod Manager Download\" on \
+                     that page — the file lands here, is checksum-verified, and drops off the \
+                     list. (Or save the file to your Downloads folder and Apply — no key needed.)",
                 );
                 ui.separator();
                 if needed.is_empty() {
@@ -4396,6 +4467,9 @@ impl App {
             ctx.request_repaint_after(std::time::Duration::from_millis(400));
         }
         self.download_session_open = open;
+        if open_settings {
+            self.settings_open = true;
+        }
     }
 
     fn browse_filters(&mut self, ui: &mut eframe::egui::Ui) {

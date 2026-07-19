@@ -299,6 +299,12 @@ pub fn set_auto_open_browser(on: bool) {
     AUTO_OPEN_BROWSER.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether a blocked fetch will auto-open the browser (for diagnostics/logging).
+#[must_use]
+pub fn auto_open_browser_enabled() -> bool {
+    AUTO_OPEN_BROWSER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Best-effort: open a URL in the user's browser (the manual-download page).
 /// Returns whether it actually launched — suppressed under tests/headless runs,
 /// or when the caller (the GUI) has opted out of auto-opening.
