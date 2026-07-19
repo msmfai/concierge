@@ -379,6 +379,95 @@ mod tests {
         );
     }
 
+    // The whole goal on a real Windows runner: the INTERACTIVE sandboxed shell
+    // must (1) render the MOTD, (2) survive self-lowering to Low integrity and
+    // stay at a prompt, (3) accept typed input, and (4) be write-confined — a
+    // write inside the write-set lands, a write outside it (the user profile,
+    // Medium) is blocked by MIC.
+    #[test]
+    #[cfg(windows)]
+    fn pty_windows_interactive_sandbox_confines_and_renders() {
+        use std::time::Duration;
+        concierge_games::register();
+        let pid = std::process::id();
+        let base = std::env::temp_dir().join(format!("cg-int-sb-{pid}"));
+        let profile = base.join("games/fallout4/profiles/default");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::write(base.join(".concierge-workspace"), "").unwrap();
+        let toml = concat!(
+            "[game]\nkind = \"fallout4\"\npristine = \"C:/cg-x\"\nversion = \"1\"\n",
+            "[game.paths]\nplugins_txt = \"C:/cg-x/p.txt\"\nmy_games = \"C:/cg-x/mg\"\n",
+        );
+        let manifest = concierge::manifest::Manifest::parse(toml).unwrap();
+        let plan = concierge::plan::eval(&manifest).unwrap();
+        let repo = concierge::repo::Repo::at(&profile);
+        let c = concierge::shell::shell_command(&repo, &plan, None, false, &[], &[]).unwrap();
+        let program: Vec<String> = std::iter::once(c.get_program())
+            .chain(c.get_args())
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let cwd = c
+            .get_current_dir()
+            .map_or_else(|| profile.clone(), std::path::Path::to_path_buf);
+        let env: Vec<(String, String)> = c
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+
+        let mut term = PtyTerminal::spawn(&program, &cwd, &env, 40, 120, None).unwrap();
+        assert!(
+            wait_for(&term, "Concierge sandbox"),
+            "MOTD never rendered: {:?}",
+            term.text_rows()
+        );
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(
+            !term.finished(),
+            "interactive shell exited after DropToLow instead of staying at a prompt"
+        );
+
+        // Type a write to an allowed path (the profile, relabeled Low) and to a
+        // denied path (the user-profile root, Medium). Confinement = only the
+        // first lands.
+        let allowed = cwd.join(format!("sb-in-{pid}.txt"));
+        let denied = concierge::repo::home().join(format!("sb-out-{pid}.txt"));
+        let _ = std::fs::remove_file(&allowed);
+        let _ = std::fs::remove_file(&denied);
+        let line = format!(
+            "Set-Content -LiteralPath '{}' -Value ok -EA SilentlyContinue; \
+             Set-Content -LiteralPath '{}' -Value bad -EA SilentlyContinue; \
+             whoami /groups | Select-String Mandatory | Out-Host; Write-Host SB-DONE\r\n",
+            allowed.display(),
+            denied.display(),
+        );
+        term.send(line.as_bytes());
+        let done = wait_for(&term, "SB-DONE");
+        let low = term.text_rows().iter().any(|r| r.contains("Low Mandatory"));
+        let allowed_ok = allowed.exists();
+        let denied_blocked = !denied.exists();
+        term.kill();
+        let _ = std::fs::remove_file(&allowed);
+        let _ = std::fs::remove_file(&denied);
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(done, "typed command never executed (input not forwarded?)");
+        assert!(
+            low,
+            "interactive shell is not Low integrity: {:?}",
+            term.text_rows()
+        );
+        assert!(allowed_ok, "write inside the write-set was blocked");
+        assert!(
+            denied_blocked,
+            "write OUTSIDE the write-set was allowed — not confined"
+        );
+    }
+
     #[test]
     fn transcript_captures_child_output() {
         // The diagnostic transcript must hold what the child printed, so a blank
