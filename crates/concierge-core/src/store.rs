@@ -165,8 +165,8 @@ fn fetch_one(
             Source::Nexus { mod_id, file_id } => match domain {
                 Some(d) => {
                     let url = nexus::file_page_url(d, *mod_id, *file_id);
-                    open_browser(&url);
-                    (url, true)
+                    let opened = open_browser(&url);
+                    (url, opened)
                 }
                 None => ("(no Nexus domain for this game)".to_owned(), false),
             },
@@ -286,13 +286,29 @@ fn find_in_dir(
     Ok(None)
 }
 
+/// Whether a blocked Nexus fetch may open the file page in the browser. The GUI
+/// turns this OFF: it drives page-opening through its guided, one-at-a-time
+/// Download panel (one "Open Nexus page" button per mod) rather than blasting a
+/// browser tab for every uncached mod at once — which, on a real modpack, means
+/// dozens of tabs the instant you click Download. Default ON for the CLI.
+static AUTO_OPEN_BROWSER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Enable/disable the automatic browser-open on a blocked fetch (see
+/// [`AUTO_OPEN_BROWSER`]). Call once at startup.
+pub fn set_auto_open_browser(on: bool) {
+    AUTO_OPEN_BROWSER.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Best-effort: open a URL in the user's browser (the manual-download page).
-fn open_browser(url: &str) {
-    // Suppress the launch under tests / headless runs.
-    if std::env::var_os("CONCIERGE_NO_BROWSER").is_some() {
-        return;
+/// Returns whether it actually launched — suppressed under tests/headless runs,
+/// or when the caller (the GUI) has opted out of auto-opening.
+fn open_browser(url: &str) -> bool {
+    if std::env::var_os("CONCIERGE_NO_BROWSER").is_some()
+        || !AUTO_OPEN_BROWSER.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return false;
     }
-    let _ = concierge_platform::open_url(url);
+    concierge_platform::open_url(url).is_ok()
 }
 
 // --- verified multi-host fetch (P0: makes an imported list actionable) ---
@@ -479,6 +495,41 @@ mod free_user_tests {
         assert!(
             matches!(out, FetchOutcome::Blocked { .. }),
             "free user must Block, not error: {out:?}"
+        );
+    }
+
+    #[test]
+    fn auto_open_off_does_not_claim_it_opened_a_page() {
+        // With auto-open disabled (the GUI's mode — it drives page-opening through
+        // its one-at-a-time panel), a blocked fetch must NOT claim it opened the
+        // file page. Robust to the env guard too: either path => not opened.
+        super::set_auto_open_browser(false);
+        let tmp = std::env::temp_dir().join(format!("cg-noopen-{}", std::process::id()));
+        let repo = Repo::at(&tmp.join("games").join("g").join("profiles").join("p"));
+        let m = PlannedMod {
+            name: "TestMod".to_owned(),
+            version: "1".to_owned(),
+            source: Source::Nexus {
+                mod_id: 1,
+                file_id: 2,
+            },
+            file: format!("cg-noopen-{}-absent.7z", std::process::id()),
+            md5: None,
+            xxhash: None,
+            install_root: "data".to_owned(),
+            subdir: None,
+            fomod: None,
+            exclude: Vec::new(),
+            plugins: Vec::new(),
+            patch: None,
+        };
+        let out = fetch_one(&repo, Some("skyrimspecialedition"), &m, false).unwrap();
+        let FetchOutcome::Blocked { instructions } = out else {
+            panic!("expected Blocked, got {out:?}");
+        };
+        assert!(
+            !instructions.contains("opened the file page"),
+            "must not claim it opened a page when auto-open is off: {instructions}"
         );
     }
 }
