@@ -208,6 +208,9 @@ fn main() -> eframe::Result {
     diag::start_session();
     // Wire every family/leaf adapter crate into core's resolver at startup.
     concierge_games::register();
+    // The GUI never blasts a browser tab per uncached mod on Download — it drives
+    // page-opening through the guided one-at-a-time Download panel instead.
+    concierge::store::set_auto_open_browser(false);
     install_panic_hook();
     // A browser "Mod Manager Download" (nxm://) launches the app with the URL as
     // an arg; drop it in the inbox so the running instance pins it (its per-frame
@@ -405,7 +408,7 @@ struct AddForm {
 /// How an action's outcome banner reads: green success, amber "you still
 /// have a manual step", or red failure. Keeps a partial/manual result from
 /// masquerading as a completed one (e.g. Download that only opened a web page).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum FlashKind {
     Ok,
     Warn,
@@ -1450,8 +1453,12 @@ impl App {
         let mutates = action.mutates_manifest();
         std::thread::spawn(move || {
             let _ = tx.send(format!("> {name}"));
+            diag::log(&format!("action '{name}' started"));
             match run_blocking(&repo, &plan, action, &tx) {
                 Ok(lines) => {
+                    for l in &lines {
+                        diag::log(&format!("action '{name}': {l}"));
+                    }
                     // A "⏸ … still needed" line means the action did NOT finish the
                     // job — e.g. Download only opened the mod's web page and a manual
                     // save is still required. Surface that as amber, not a green
@@ -1484,10 +1491,12 @@ impl App {
                     } else {
                         (FlashKind::Ok, format!("{name} finished"))
                     };
+                    diag::log(&format!("action '{name}' done — {kind:?}: {summary}"));
                     let _ = flash.send((kind, summary));
                 }
                 Err(e) => {
                     let msg = e.to_string();
+                    diag::log(&format!("action '{name}' FAILED — {msg}"));
                     let _ = tx.send(format!("{name}: {msg}"));
                     let _ = flash.send((FlashKind::Err, format!("{name} failed — {msg}")));
                 }
