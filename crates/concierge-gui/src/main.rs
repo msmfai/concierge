@@ -4374,18 +4374,22 @@ impl App {
         let domain = self.plan.as_ref().and_then(|p| p.game.nexus_domain.clone());
         let mods = self.plan.as_ref().map_or_else(Vec::new, |p| p.mods.clone());
         let total = mods.len();
-        let needed: Vec<&concierge::plan::PlannedMod> = mods
+        // Every mod with its on-disk status, so the panel is a PERSISTENT
+        // checklist you click through — a downloaded mod stays visible with a ✓
+        // instead of dropping off the list, and its status updates live as the
+        // archive lands (present = its md5-keyed archive is in the store).
+        let entries: Vec<(&concierge::plan::PlannedMod, bool)> = mods
             .iter()
-            .filter(|m| {
+            .map(|m| {
                 let present = repo.as_ref().is_some_and(|r| {
                     m.md5
                         .as_deref()
                         .is_some_and(|h| !h.is_empty() && r.store_path(h, &m.file).exists())
                 });
-                !present
+                (m, present)
             })
             .collect();
-        let have = total - needed.len();
+        let have = entries.iter().filter(|(_, p)| *p).count();
         let pct = have.saturating_mul(100).checked_div(total).unwrap_or(0);
         let frac = f32::from(u16::try_from(pct.min(100)).unwrap_or(0)) / 100.0;
         // The ACTUAL reason a 1-click download "does nothing": no Nexus API key.
@@ -4425,52 +4429,73 @@ impl App {
                 }
                 ui.small(
                     "Click \"Open Nexus page\" on a mod below, then \"Mod Manager Download\" on \
-                     that page — the file lands here, is checksum-verified, and drops off the \
-                     list. (Or save the file to your Downloads folder and Apply — no key needed.)",
+                     that page — the file lands here, is checksum-verified, and the row ticks to \
+                     \u{2713}. (Or save the file to your Downloads folder and Apply — no key \
+                     needed.)",
                 );
                 ui.separator();
-                if needed.is_empty() {
+                if have == total {
                     ui.colored_label(
                         egui::Color32::from_rgb(120, 190, 120),
                         "\u{2713} Every mod is downloaded — you can Apply.",
                     );
-                    return;
                 }
+                let green = egui::Color32::from_rgb(120, 190, 120);
                 egui::ScrollArea::vertical()
                     .max_height(360.0)
                     .show(ui, |ui| {
-                        for m in &needed {
+                        for (m, present) in &entries {
                             ui.horizontal(|ui| {
+                                if *present {
+                                    ui.colored_label(green, "\u{2713}")
+                                        .on_hover_text("downloaded — the archive is in your cache");
+                                } else {
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(150, 150, 150),
+                                        "\u{25cb}",
+                                    )
+                                    .on_hover_text("not downloaded yet");
+                                }
                                 ui.label(&m.name);
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| match (&m.source, domain.as_deref()) {
-                                        (
-                                            concierge::plan::Source::Nexus { mod_id, file_id },
-                                            Some(d),
-                                        ) => {
-                                            if ui
-                                                .button("Open Nexus page")
-                                                .on_hover_text(
-                                                    "click \"Mod Manager Download\" there",
-                                                )
-                                                .clicked()
-                                            {
-                                                let page = concierge::nexus::file_page_url(
-                                                    d, *mod_id, *file_id,
-                                                );
-                                                diag::log(&format!(
-                                                    "browser: opening Nexus page (button click, \
-                                                     mod {mod_id} file {file_id}): {page}"
-                                                ));
-                                                let _ = concierge_platform::open_url(&page);
+                                    |ui| {
+                                        if *present {
+                                            ui.colored_label(green, "downloaded");
+                                        } else {
+                                            match (&m.source, domain.as_deref()) {
+                                                (
+                                                    concierge::plan::Source::Nexus {
+                                                        mod_id,
+                                                        file_id,
+                                                    },
+                                                    Some(d),
+                                                ) => {
+                                                    if ui
+                                                        .button("Open Nexus page")
+                                                        .on_hover_text(
+                                                            "click \"Mod Manager Download\" there",
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        let page = concierge::nexus::file_page_url(
+                                                            d, *mod_id, *file_id,
+                                                        );
+                                                        diag::log(&format!(
+                                                            "browser: opening Nexus page (button \
+                                                             click, mod {mod_id} file {file_id}): \
+                                                             {page}"
+                                                        ));
+                                                        let _ = concierge_platform::open_url(&page);
+                                                    }
+                                                }
+                                                (concierge::plan::Source::Url { .. }, _) => {
+                                                    ui.weak("direct URL — use Download");
+                                                }
+                                                _ => {
+                                                    ui.weak("downloads via Download");
+                                                }
                                             }
-                                        }
-                                        (concierge::plan::Source::Url { .. }, _) => {
-                                            ui.weak("direct URL — use Download");
-                                        }
-                                        _ => {
-                                            ui.weak("downloads via Download");
                                         }
                                     },
                                 );
