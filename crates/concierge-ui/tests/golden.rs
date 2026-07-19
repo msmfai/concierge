@@ -13,6 +13,7 @@ fn base() -> UiFacts {
         game_count: 2,
         active_game: Some("skyrimse".into()),
         active_profile: Some("modpack".into()),
+        has_active_profile: true,
         is_bethesda: true,
         has_catalog: true,
         tab: TabFacts(concierge_ui::Tab::Setup),

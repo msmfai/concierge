@@ -685,6 +685,56 @@ impl App {
         Some(Repo::at(&profile.dir))
     }
 
+    /// True when a modpack is genuinely open — a repo AND a loaded plan. The one
+    /// predicate every heavy action shares; the projected action guards and the
+    /// banner both read from it (via `UiFacts.has_active_profile`).
+    fn has_active_profile(&self) -> bool {
+        self.active_repo().is_some() && self.plan.is_some()
+    }
+
+    /// A prominent strip above the action bar: which modpack is open, or a clear
+    /// call-to-action when none is — so the greyed-out actions have a visible,
+    /// self-explaining reason rather than looking broken.
+    fn active_modpack_banner(&self, ui: &mut eframe::egui::Ui) {
+        use eframe::egui;
+        if self.has_active_profile() {
+            let game = self.plan.as_ref().map_or_else(
+                || "game".to_owned(),
+                |p| concierge_games::display_name(&p.game.kind),
+            );
+            let profile = self
+                .profiles
+                .get(self.profile_idx)
+                .map_or("-", |p| p.name.as_str());
+            ui.horizontal(|ui| {
+                ui.colored_label(egui::Color32::from_rgb(120, 190, 120), "\u{25cf}"); // ●
+                ui.label(
+                    egui::RichText::new(format!("Modpack open — {game} / {profile}"))
+                        .color(egui::Color32::from_rgb(120, 190, 120)),
+                );
+            });
+        } else {
+            egui::Frame::new()
+                .fill(egui::Color32::from_rgb(60, 50, 20))
+                .inner_margin(egui::Margin::symmetric(8, 5))
+                .corner_radius(4)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            egui::RichText::new("\u{26a0} No modpack open.")
+                                .strong()
+                                .color(egui::Color32::from_rgb(240, 200, 120)),
+                        );
+                        ui.label(
+                            "Pick a game and profile above, or create a new profile, to begin — \
+                             the actions below need an open modpack.",
+                        );
+                    });
+                });
+        }
+        ui.add_space(4.0);
+    }
+
     fn manifest_path(&self) -> Option<PathBuf> {
         Some(self.active_repo()?.profile.join("manifest.toml"))
     }
@@ -736,6 +786,9 @@ impl App {
             game_count: self.games.len(),
             active_game: kind.clone(),
             active_profile: self.profiles.get(self.profile_idx).map(|p| p.name.clone()),
+            // The exact precondition run_action enforces: a repo AND a plan. This
+            // is what disables every profile-requiring action when it's false.
+            has_active_profile: self.active_repo().is_some() && self.plan.is_some(),
             is_bethesda: kind.as_deref().is_some_and(is_bethesda),
             has_catalog: self
                 .plan
@@ -2830,6 +2883,11 @@ impl App {
             }
 
             ui.separator();
+            // Make the active-modpack state unmissable right where the actions
+            // live: green when one is open, an amber call-to-action when not — so
+            // it's never ambiguous whether a profile is active, or why the action
+            // buttons below are greyed out.
+            self.active_modpack_banner(ui);
             ui.horizontal(|ui| {
                 if let Some(tr) = self.screen().transitions.iter().find(|t| t.id == "open_preview").cloned() {
                     self.transition_button(ui, &tr);

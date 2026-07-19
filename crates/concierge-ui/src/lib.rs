@@ -310,6 +310,12 @@ pub struct UiFacts {
     pub game_count: usize,
     pub active_game: Option<String>,
     pub active_profile: Option<String>,
+    /// Whether a modpack/profile is actually open (an active repo AND a loaded
+    /// plan) — the precondition every heavy action shares. When false, those
+    /// actions are projected disabled with a "no modpack open" guard, so an
+    /// action that needs a profile can't be invoked without one (in either
+    /// renderer). Mirrors `run_action`'s runtime `(Some(repo), Some(plan))` gate.
+    pub has_active_profile: bool,
     pub is_bethesda: bool,
     pub has_catalog: bool,
     pub tab: TabFacts,
@@ -456,21 +462,32 @@ fn hv(mut tr: Transition, hover: &str) -> Transition {
 
 const BUSY: &str = "an action is running";
 const LOCKED: &str = "switch to Edit mode";
+const NO_PROFILE: &str = "open a modpack first";
 
 /// The action bar + view controls available in the base (editable/locked/busy)
 /// states. Guards mirror the GUI exactly so the drift guard holds.
 #[allow(clippy::too_many_lines)] // a flat declarative table, one entry per action
 fn base_transitions(f: &UiFacts) -> Vec<Transition> {
     let busy = f.busy;
-    let guard_busy = busy.then_some(BUSY);
+    // A modpack must be open before any heavy action can run — that guard wins
+    // over busy/locked, since without a profile there's nothing to act on. Fold
+    // it into every profile-requiring entry so the disabled state is projected
+    // (and honored by both renderers), never a silent no-op at click time.
+    let has_profile = f.has_active_profile;
+    let no_profile = (!has_profile).then_some(NO_PROFILE);
+    // `enabled` for a plain, profile-requiring, busy-gated action.
+    let act_ok = has_profile && !busy;
+    let guard_busy = no_profile.or_else(|| busy.then_some(BUSY));
     let mut v = vec![
-        hv(t(Intent::Download, "Download", !busy, guard_busy), "download the mods your setup needs (queues manual downloads for free accounts)"),
-        hv(t(Intent::Apply, "Apply", !busy, guard_busy), "install your Setup into the game — backs up saves, then downloads, builds, and deploys"),
-        hv(t(Intent::Verify, "Verify", !busy, guard_busy), "check the game still matches your Setup"),
+        hv(t(Intent::Download, "Download", act_ok, guard_busy), "download the mods your setup needs (queues manual downloads for free accounts)"),
+        hv(t(Intent::Apply, "Apply", act_ok, guard_busy), "install your Setup into the game — backs up saves, then downloads, builds, and deploys"),
+        hv(t(Intent::Verify, "Verify", act_ok, guard_busy), "check the game still matches your Setup"),
     ];
     if f.is_bethesda {
-        let edit_ok = f.mutable && !busy;
-        let sort_guard = if busy {
+        let edit_ok = has_profile && f.mutable && !busy;
+        let sort_guard = if !has_profile {
+            Some(NO_PROFILE)
+        } else if busy {
             Some(BUSY)
         } else if !f.mutable {
             Some(LOCKED)
@@ -486,25 +503,30 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
             "find what each mod needs (masters/frameworks) and flag anything missing",
         ));
         v.push(hv(
-            t(Intent::FindPatches, "Find patches", !busy, guard_busy),
+            t(Intent::FindPatches, "Find patches", act_ok, guard_busy),
             "find compatibility patches for conflicting mods",
         ));
         v.push(hv(
-            t(Intent::MergeConflicts, "Merge conflicts", !busy, guard_busy),
+            t(
+                Intent::MergeConflicts,
+                "Merge conflicts",
+                act_ok,
+                guard_busy,
+            ),
             "auto-merge mods that edit the same lists (leveled lists)",
         ));
         v.push(hv(
-            t(Intent::Conflicts, "Conflicts", !busy, guard_busy),
+            t(Intent::Conflicts, "Conflicts", act_ok, guard_busy),
             "see which mod wins when two change the same thing",
         ));
     }
     v.push(hv(
-        t(Intent::Play, "Play", !busy, guard_busy),
+        t(Intent::Play, "Play", act_ok, guard_busy),
         "launch the game",
     ));
     v.push(hv(
         to(
-            t(Intent::Uninstall, "Uninstall", !busy, guard_busy),
+            t(Intent::Uninstall, "Uninstall", act_ok, guard_busy),
             "ConfirmingUninstall",
         ),
         "remove the installed mods from the game (leaves your Setup intact)",
@@ -522,14 +544,21 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         toggle(Intent::ToggleLock, lock_label, !f.mutable),
         lock_hover,
     ));
-    let undo_guard = if !f.mutable {
+    let undo_guard = if !has_profile {
+        Some(NO_PROFILE)
+    } else if !f.mutable {
         Some(LOCKED)
     } else if !f.has_undo {
         Some("nothing to undo")
     } else {
         None
     };
-    v.push(t(Intent::Undo, "undo", f.mutable && f.has_undo, undo_guard));
+    v.push(t(
+        Intent::Undo,
+        "undo",
+        has_profile && f.mutable && f.has_undo,
+        undo_guard,
+    ));
     // add-mod form (rendered in the Setup tab header, not the action bar row).
     let add_label = if f.add_open {
         "− add mod"
@@ -539,15 +568,15 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
     v.push(raw(
         "add_open",
         add_label,
-        f.mutable,
-        (!f.mutable).then_some(LOCKED),
+        has_profile && f.mutable,
+        no_profile.or_else(|| (!f.mutable).then_some(LOCKED)),
     ));
     if f.add_open {
         v.push(raw(
             "add_confirm",
             "add to manifest",
-            f.mutable,
-            (!f.mutable).then_some(LOCKED),
+            has_profile && f.mutable,
+            no_profile.or_else(|| (!f.mutable).then_some(LOCKED)),
         ));
     }
     // AI assistant panel (side column; rendered by the GUI in its own place).
@@ -594,16 +623,16 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         v.push(raw(
             &format!("rollback:{}", ver.number),
             "roll back",
-            f.mutable,
-            (!f.mutable).then_some(LOCKED),
+            has_profile && f.mutable,
+            no_profile.or_else(|| (!f.mutable).then_some(LOCKED)),
         ));
     }
     for g in &f.saves {
         v.push(raw(
             &format!("restore_save:{g}"),
             "restore",
-            !f.busy,
-            f.busy.then_some(BUSY),
+            has_profile && !f.busy,
+            no_profile.or_else(|| f.busy.then_some(BUSY)),
         ));
     }
     v.push(to(
@@ -929,6 +958,7 @@ mod tests {
             game_count: 2,
             active_game: Some("skyrimse".into()),
             active_profile: Some("modpack".into()),
+            has_active_profile: true,
             is_bethesda: true,
             has_catalog: true,
             mutable: true,
@@ -998,6 +1028,42 @@ mod tests {
         let ids: Vec<&str> = s.transitions.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, vec!["confirm_yes", "confirm_no"]);
         assert!(s.banner.as_deref().unwrap().contains("Uninstall"));
+    }
+
+    #[test]
+    fn no_active_profile_disables_every_heavy_action() {
+        // The guardrail: with no modpack open, the profile-requiring actions are
+        // projected DISABLED with the "open a modpack first" guard — so neither
+        // renderer can invoke one without a profile (no silent no-op at click).
+        let mut f = base_facts();
+        f.has_active_profile = false;
+        let s = build_screen(&f);
+        for id in [
+            "download",
+            "apply",
+            "verify",
+            "play",
+            "uninstall",
+            "sort_load",
+        ] {
+            let tr = s
+                .transitions
+                .iter()
+                .find(|t| t.id == id)
+                .unwrap_or_else(|| panic!("missing transition {id}"));
+            assert!(!tr.enabled, "{id} must be disabled with no profile");
+            assert_eq!(
+                tr.guard.as_deref(),
+                Some(NO_PROFILE),
+                "{id} must carry the no-profile guard"
+            );
+        }
+        // ...but profile-agnostic chrome stays available.
+        assert!(s
+            .transitions
+            .iter()
+            .any(|t| t.id == "open_settings" && t.enabled));
+        assert!(s.transitions.iter().any(|t| t.id == "rescan" && t.enabled));
     }
 
     #[test]
