@@ -67,3 +67,17 @@ jobs:
         run: cargo clippy -p concierge-core --lib
       - name: Test the sandbox confinement
         run: cargo test -p concierge-core --lib shell -- --nocapture
+
+  # The embedded terminal must render child output on Windows — a user reported
+  # an empty grid there. Reproduce it on a real Windows runner so the PTY backend
+  # can be fixed with fast CI iteration instead of a manual test loop.
+  windows-terminal:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96.0"
+      - uses: Swatinem/rust-cache@v2
+      - name: Embedded terminal renders on Windows
+        run: cargo test -p concierge-gui pty_windows -- --nocapture

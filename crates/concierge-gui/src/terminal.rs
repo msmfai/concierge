@@ -230,6 +230,62 @@ mod tests {
         );
     }
 
+    // The embedded terminal MUST render child output on Windows (a real user
+    // reported an empty grid there). Reproduce it in CI: spawn cmd.exe and assert
+    // its output reaches the grid. If this fails on the Windows runner, the PTY
+    // backend is the culprit and we can iterate on it here, not via a user.
+    #[test]
+    #[cfg(windows)]
+    fn pty_windows_renders_cmd_output() {
+        let term = PtyTerminal::spawn(
+            &[
+                "cmd.exe".into(),
+                "/c".into(),
+                "echo CONCIERGE-WIN-MARKER".into(),
+            ],
+            std::path::Path::new("."),
+            &[],
+            24,
+            80,
+            None,
+        )
+        .unwrap();
+        assert!(
+            wait_for(&term, "CONCIERGE-WIN-MARKER"),
+            "cmd output never reached the grid: {:?}",
+            term.text_rows()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn pty_windows_renders_interactive_powershell() {
+        let term = PtyTerminal::spawn(
+            &[
+                "powershell.exe".into(),
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NoExit".into(),
+                "-Command".into(),
+                "Write-Host CONCIERGE-PS-MARKER".into(),
+            ],
+            std::path::Path::new("."),
+            &[],
+            24,
+            80,
+            None,
+        )
+        .unwrap();
+        let shown = wait_for(&term, "CONCIERGE-PS-MARKER");
+        let alive = !term.finished();
+        term.kill();
+        assert!(shown, "interactive PS output never reached the grid");
+        assert!(
+            alive,
+            "interactive PS exited instead of staying at a prompt"
+        );
+    }
+
     #[test]
     fn transcript_captures_child_output() {
         // The diagnostic transcript must hold what the child printed, so a blank
