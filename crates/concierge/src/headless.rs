@@ -238,6 +238,9 @@ impl Headless {
             game_count: self.game_count,
             active_game: self.game_kind.clone(),
             active_profile: self.profile.clone(),
+            // Parallel to the GUI's repo+plan gate: a profile selected AND a game
+            // loaded. Keeps the projected action guards identical across renderers.
+            has_active_profile: self.profile.is_some() && self.game_kind.is_some(),
             is_bethesda: self.is_bethesda,
             has_catalog: self.has_catalog,
             tab: TabFacts(self.tab),
