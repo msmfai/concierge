@@ -77,13 +77,21 @@ fn stamp() -> u64 {
 
 /// Append a line to the diagnostics log (best-effort; never panics). Written to
 /// BOTH the exe-adjacent log (travels with the app / syncs back via Bear Share)
-/// and the stable per-user log (always the same findable place).
+/// and the stable per-user log (always the same findable place). Timestamped to
+/// the MILLISECOND so events in the same second (e.g. two windows opening at
+/// once) are ordered and their spacing is visible.
 pub fn log(msg: &str) {
-    let line = format!("[{}] {msg}\n", stamp());
+    let line = format!("[{}] {msg}\n", stamp_millis());
     append(&log_file(), &line);
     if let Some(stable) = stable_log_file() {
         append(stable, &line);
     }
+}
+
+fn stamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis())
 }
 
 fn append(path: &Path, line: &str) {

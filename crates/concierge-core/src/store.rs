@@ -30,13 +30,23 @@ pub fn fetch_all(repo: &Repo, plan: &Plan) -> Result<Vec<(String, FetchOutcome)>
     // premium accounts (it 403s for free ones), so free users take the
     // click/manual path instead of hard-failing.
     let premium = nexus_premium();
+    concierge_platform::diag(&format!(
+        "fetch_all: {} mod(s), premium={premium}, auto_open_browser={}",
+        plan.mods.len(),
+        auto_open_browser_enabled()
+    ));
     plan.mods
         .iter()
         .map(|m| {
-            Ok((
-                m.name.clone(),
-                fetch_one(repo, plan.game.nexus_domain.as_deref(), m, premium)?,
-            ))
+            let outcome = fetch_one(repo, plan.game.nexus_domain.as_deref(), m, premium)?;
+            let tag = match &outcome {
+                FetchOutcome::Present(_) => "already cached",
+                FetchOutcome::Stored(_) => "downloaded",
+                FetchOutcome::NeedsPin { .. } => "downloaded (needs pin)",
+                FetchOutcome::Blocked { .. } => "blocked (manual download needed)",
+            };
+            concierge_platform::diag(&format!("fetch_all: '{}' -> {tag}", m.name));
+            Ok((m.name.clone(), outcome))
         })
         .collect()
 }
@@ -312,8 +322,12 @@ fn open_browser(url: &str) -> bool {
     if std::env::var_os("CONCIERGE_NO_BROWSER").is_some()
         || !AUTO_OPEN_BROWSER.load(std::sync::atomic::Ordering::Relaxed)
     {
+        concierge_platform::diag(&format!(
+            "fetch: browser-open SUPPRESSED (auto_open off) for {url}"
+        ));
         return false;
     }
+    concierge_platform::diag(&format!("fetch: auto-opening browser for {url}"));
     concierge_platform::open_url(url).is_ok()
 }
 
