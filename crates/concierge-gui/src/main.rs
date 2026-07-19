@@ -173,13 +173,12 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Is another Concierge GUI alive? True if the heartbeat was touched in the last
-/// few seconds (the live instance rewrites it every ~2s).
-fn instance_is_running() -> bool {
+/// Age of the heartbeat in seconds, or `None` if it's missing/unreadable.
+fn heartbeat_age() -> Option<u64> {
     std::fs::read_to_string(heartbeat_path())
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
-        .is_some_and(|t| now_secs().saturating_sub(t) < 6)
+        .map(|t| now_secs().saturating_sub(t))
 }
 
 /// Background thread that keeps the heartbeat fresh for the life of the process.
@@ -217,9 +216,24 @@ fn main() -> eframe::Result {
         let _ = concierge::nexus::append_nxm_inbox(url);
         diag::log(&format!("nxm handoff: queued {url}"));
     }
-    if !nxm_urls.is_empty() && instance_is_running() {
-        diag::log("nxm handoff: a Concierge is already running — handed off via inbox, exiting");
-        return Ok(());
+    if !nxm_urls.is_empty() {
+        // Log the decision either way so a "second window opened" report is
+        // diagnosable from the log alone: heartbeat present+fresh => hand off;
+        // absent/stale => this becomes the live instance and opens a window.
+        match heartbeat_age() {
+            Some(age) if age < 6 => {
+                diag::log(&format!(
+                    "nxm handoff: live Concierge found (heartbeat {age}s old) — handed off via inbox, exiting"
+                ));
+                return Ok(());
+            }
+            Some(age) => diag::log(&format!(
+                "nxm handoff: heartbeat is stale ({age}s old) — opening this instance"
+            )),
+            None => diag::log(
+                "nxm handoff: no heartbeat found — no Concierge running, opening this instance",
+            ),
+        }
     }
     // This instance is the live one: heartbeat so future nxm launches hand off to
     // it instead of opening a second window.
@@ -255,7 +269,12 @@ fn main() -> eframe::Result {
     // color but not its drawn content; a borderless-fullscreen swapchain
     // composites correctly. Opt in with CONCIERGE_FULLSCREEN=1 (native platforms
     // keep a normal window).
-    let mut viewport = eframe::egui::ViewportBuilder::default();
+    // Stamp the version into the title bar so the running build is identifiable
+    // at a glance — a dev delivery lands via Syncthing and users can otherwise
+    // not tell a stale exe from a fresh one (the nxm-handoff fix, e.g., only
+    // exists from v0.8.1 on, and "which build am I on?" was unanswerable).
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_title(concat!("Concierge v", env!("CARGO_PKG_VERSION")));
     if std::env::var_os("CONCIERGE_FULLSCREEN").is_some() {
         viewport = viewport.with_fullscreen(true);
     }
