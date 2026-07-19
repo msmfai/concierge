@@ -161,6 +161,39 @@ fn windows_has_vulkan_loader() -> bool {
         .exists()
 }
 
+/// Shared liveness marker so an nxm-launched process can tell a Concierge is
+/// already running and hand off to it (rather than opening a second window).
+fn heartbeat_path() -> std::path::PathBuf {
+    concierge_platform::config_dir().join("concierge-gui.heartbeat")
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Is another Concierge GUI alive? True if the heartbeat was touched in the last
+/// few seconds (the live instance rewrites it every ~2s).
+fn instance_is_running() -> bool {
+    std::fs::read_to_string(heartbeat_path())
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .is_some_and(|t| now_secs().saturating_sub(t) < 6)
+}
+
+/// Background thread that keeps the heartbeat fresh for the life of the process.
+fn start_heartbeat() {
+    let path = heartbeat_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::thread::spawn(move || loop {
+        let _ = std::fs::write(&path, now_secs().to_string());
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    });
+}
+
 fn main() -> eframe::Result {
     // Surfaces wgpu/winit diagnostics when RUST_LOG is set (e.g.
     // RUST_LOG=wgpu_core=info,wgpu_hal=info); silent otherwise.
@@ -172,15 +205,25 @@ fn main() -> eframe::Result {
     concierge_games::register();
     install_panic_hook();
     // A browser "Mod Manager Download" (nxm://) launches the app with the URL as
-    // an arg; drop it in the inbox so this (or an already-running) instance pins
-    // it. (The already-running-instance case for a running app is served by the
-    // per-frame inbox poll in update(); browser->running-app without a relaunch
-    // still needs macOS openURLs glue.)
-    for arg in std::env::args().skip(1) {
-        if arg.starts_with("nxm://") {
-            let _ = concierge::nexus::append_nxm_inbox(&arg);
-        }
+    // an arg; drop it in the inbox so the running instance pins it (its per-frame
+    // inbox poll in update() picks it up). CRUCIAL: if a Concierge is already
+    // running, HAND OFF and exit — otherwise every download would open a second
+    // window instead of landing in the user's open Concierge.
+    let nxm_urls: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| a.starts_with("nxm://"))
+        .collect();
+    for url in &nxm_urls {
+        let _ = concierge::nexus::append_nxm_inbox(url);
+        diag::log(&format!("nxm handoff: queued {url}"));
     }
+    if !nxm_urls.is_empty() && instance_is_running() {
+        diag::log("nxm handoff: a Concierge is already running — handed off via inbox, exiting");
+        return Ok(());
+    }
+    // This instance is the live one: heartbeat so future nxm launches hand off to
+    // it instead of opening a second window.
+    start_heartbeat();
     // Render with wgpu, targeting each platform's native graphics API. The
     // default glow/OpenGL path fails on setups without a modern WGL/GL context
     // (older Intel drivers, VMs, remote desktop, Wine), so it isn't a reliable
@@ -2259,10 +2302,12 @@ impl App {
     fn update_ctx(&mut self, ctx: &eframe::egui::Context) {
         use eframe::egui;
         // nxm handoff: pin any links dropped in the inbox (browser download /
-        // `concierge nxm <url>` reaching this running instance).
+        // `concierge nxm <url>` reaching this running instance). Poll ~1/s even
+        // when idle so a launcher-handed-off download appears promptly.
         for url in concierge::nexus::drain_nxm_inbox() {
             self.handle_nxm(&url);
         }
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
         let mut new_log = Vec::new();
         if self.sync_progress.lock().is_ok_and(|g| g.is_some()) {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
