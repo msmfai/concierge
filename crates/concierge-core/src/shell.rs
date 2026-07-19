@@ -160,6 +160,10 @@ pub fn shell_command(
     // so strip the prefix. No-op elsewhere (canonicalize never adds it).
     let profile = strip_verbatim(profile);
     let repo = &Repo::at(&profile);
+    // Ensure the agent's context files (CLAUDE.md / AGENTS.md / slash-commands)
+    // are present before the shell — so an agent launched here opens with the
+    // tools already explained. Idempotent; never clobbers user edits.
+    let _ = crate::provision::provision_profile(&repo.profile, &plan.game.kind);
     let ws = write_set(repo, plan, extra_allow);
     let mut extra_env: Vec<(String, String)> = Vec::new();
     let program: Vec<String> = if !cmd.is_empty() {
@@ -176,6 +180,18 @@ pub fn shell_command(
         .env("CONCIERGE_REPO", &repo.profile)
         .env("CONCIERGE_SANDBOX", "1")
         .env("CONCIERGE_MOTD", sandbox_motd());
+    // Make `concierge` itself runnable inside the sandbox: the CLAUDE.md tells the
+    // agent to run `concierge eval/fetch/realize/...`, and the binary ships beside
+    // the running exe (GUI: next to concierge-gui; CLI: is the running exe). A
+    // portable install (Windows zip) isn't on PATH otherwise, so prepend its dir.
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+    {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        let path = std::env::var("PATH").unwrap_or_default();
+        c.env("PATH", format!("{}{sep}{path}", dir.display()));
+    }
     for (k, v) in extra_env {
         c.env(k, v);
     }
@@ -282,8 +298,9 @@ fn sandbox_motd() -> String {
   Whichever you have installed — start it and it builds the pack for
   you, confined to this modpack. The profile carries CLAUDE.md and
   AGENTS.md plus the slash-commands /health /curate /sort /conflicts
-  /audit-ids, so any agent already knows the tools. CONCIERGE_REPO
-  points at this profile. Type 'exit' to leave.
+  /audit-ids, so any agent already knows the tools. The `concierge`
+  CLI is on PATH here (eval / fetch / realize / check …) and
+  CONCIERGE_REPO points at this profile. Type 'exit' to leave.
 ========================================================================
 "
     .to_owned()
@@ -594,6 +611,29 @@ mod tests {
         assert!(
             steered,
             "history is steered explicitly: env={env:?} prog={program:?}"
+        );
+    }
+
+    #[test]
+    fn shell_puts_the_concierge_binary_dir_on_path() {
+        // The agent is told to run `concierge eval/fetch/...`; the binary ships
+        // beside the running exe, so its dir must be prepended to PATH — else on a
+        // portable install the agent can't find it and hunts for the exe.
+        let (repo, plan) = fixture();
+        let c = shell_command(&repo, &plan, None, false, &[], &[]).unwrap();
+        let path = c
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("PATH"))
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.display().to_string()))
+            .unwrap_or_default();
+        assert!(
+            !exe_dir.is_empty() && path.contains(&exe_dir),
+            "the concierge binary dir is prepended to PATH: dir={exe_dir} PATH={path}"
         );
     }
 
