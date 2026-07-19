@@ -3195,121 +3195,61 @@ impl App {
                 cwd.display()
             ),
         );
-        // Windows pre-flight: the interactive terminal loses PowerShell's own
-        // startup errors (parse / AMSI-block / Add-Type failure) to the console
-        // screen-clear. Run the SAME command once non-interactively with captured
-        // stdout+stderr and write it to the (reliably-synced) top-level log — so a
-        // silent failure is finally visible verbatim.
-        if cfg!(windows) {
-            let mut pf = std::process::Command::new(
-                program.first().map_or("powershell.exe", String::as_str),
-            );
-            for a in program.iter().skip(1).filter(|a| a.as_str() != "-NoExit") {
-                pf.arg(a);
-            }
-            pf.current_dir(&cwd);
+        // Windows: the embedded ConPTY terminal delivers NO child output at all
+        // (verified — even `cmd /c echo` renders an empty grid), so launch the
+        // sandboxed PowerShell in a REAL external console window, which renders
+        // natively. Elsewhere, keep the embedded terminal.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+            let Some((exe, args)) = program.split_first() else {
+                self.error = Some("empty sandbox command".to_owned());
+                return;
+            };
+            let mut c = std::process::Command::new(exe);
+            c.args(args).current_dir(&cwd);
             for (k, v) in &env {
-                pf.env(k, v);
+                c.env(k, v);
             }
-            match pf.output() {
-                Ok(out) => diag::log(&format!(
-                    "PREFLIGHT exit={:?}\n---stdout---\n{}\n---stderr---\n{}\n---end preflight---",
-                    out.status.code(),
-                    String::from_utf8_lossy(&out.stdout),
-                    String::from_utf8_lossy(&out.stderr),
-                )),
-                Err(e) => diag::log(&format!("PREFLIGHT spawn error: {e}")),
-            }
-
-            // Falsify the PTY-mechanism hypotheses INDEPENDENTLY of the sandbox:
-            // does portable-pty's ConPTY render (1) any output at all, and (2) an
-            // INTERACTIVE PowerShell that stays alive? If probe 2 shows nothing or
-            // finished=true, the embedded terminal itself can't host an interactive
-            // shell on this Windows — that's the bug, not the sandbox. Results go to
-            // the top-level log (reliably synced). ~3s UI pause on the diag build.
-            let probes: [(&str, Vec<String>); 3] = [
-                (
-                    "cmd-echo",
-                    vec![
-                        "cmd.exe".into(),
-                        "/c".into(),
-                        "echo CONCIERGE-CMD-ALIVE".into(),
-                    ],
-                ),
-                (
-                    "ps-write",
-                    vec![
-                        "powershell.exe".into(),
-                        "-NoLogo".into(),
-                        "-NoProfile".into(),
-                        "-Command".into(),
-                        "Write-Host CONCIERGE-PS-WRITE".into(),
-                    ],
-                ),
-                (
-                    "ps-interactive",
-                    vec![
-                        "powershell.exe".into(),
-                        "-NoLogo".into(),
-                        "-NoProfile".into(),
-                        "-NoExit".into(),
-                        "-Command".into(),
-                        "Write-Host CONCIERGE-PS-INTERACTIVE".into(),
-                    ],
-                ),
-            ];
-            for (label, probe) in probes {
-                match terminal::PtyTerminal::spawn(&probe, &cwd, &[], 40, 100, None) {
-                    Ok(t) => {
-                        std::thread::sleep(std::time::Duration::from_millis(1200));
-                        let finished = t.finished();
-                        let grid: Vec<String> = t
-                            .text_rows()
-                            .into_iter()
-                            .filter(|r| !r.trim().is_empty())
-                            .collect();
-                        diag::log(&format!(
-                            "PTYPROBE[{label}] finished={finished} grid={grid:?}"
-                        ));
-                        t.kill();
-                    }
-                    Err(e) => diag::log(&format!("PTYPROBE[{label}] spawn error: {e}")),
+            c.creation_flags(CREATE_NEW_CONSOLE);
+            match c.spawn() {
+                Ok(_) => {
+                    diag::log("opened sandboxed shell in a new console window");
+                    concierge::diag::event("gui", "spawned", "external console opened");
+                    self.notice = Some(
+                        "A sandboxed PowerShell window opened — run opencode, codex, or \
+                         claude in it."
+                            .to_owned(),
+                    );
+                }
+                Err(e) => {
+                    diag::log(&format!("external console spawn failed: {e}"));
+                    self.error = Some(format!("Couldn't open the sandboxed shell window: {e}"));
                 }
             }
         }
-        let transcript = session.join("terminal.raw");
-        match terminal::PtyTerminal::spawn(&program, &cwd, &env, 40, 100, Some(transcript)) {
-            Ok(t) => {
-                concierge::diag::event("gui", "spawned", "PTY spawn OK");
-                diag::log("agent terminal spawned OK");
-                // Capture the REAL sandbox terminal's state directly in the
-                // top-level log (the session-folder transcript sometimes lags in
-                // sync): did it stay alive, and what did it render?
-                if cfg!(windows) {
-                    std::thread::sleep(std::time::Duration::from_millis(1500));
-                    let finished = t.finished();
-                    let grid: Vec<String> = t
-                        .text_rows()
-                        .into_iter()
-                        .filter(|r| !r.trim().is_empty())
-                        .collect();
-                    diag::log(&format!(
-                        "REAL-TERMINAL after 1.5s: finished={finished} grid={grid:?}"
+        #[cfg(not(windows))]
+        {
+            let transcript = session.join("terminal.raw");
+            match terminal::PtyTerminal::spawn(&program, &cwd, &env, 40, 100, Some(transcript)) {
+                Ok(t) => {
+                    concierge::diag::event("gui", "spawned", "PTY spawn OK");
+                    diag::log("agent terminal spawned OK");
+                    self.term = Some(t);
+                    self.term_epoch = 0;
+                    self.ai_visible = true;
+                }
+                Err(e) => {
+                    concierge::diag::event("gui", "error", &format!("PTY spawn failed: {e}"));
+                    diag::log(&format!("agent terminal FAILED to start: {e}"));
+                    self.log
+                        .push(format!("agent terminal failed to start: {e}"));
+                    self.error = Some(format!(
+                        "The sandboxed shell failed to start: {e}\n(details in {})",
+                        session.display()
                     ));
                 }
-                self.term = Some(t);
-                self.term_epoch = 0;
-                self.ai_visible = true;
-            }
-            Err(e) => {
-                concierge::diag::event("gui", "error", &format!("PTY spawn failed: {e}"));
-                diag::log(&format!("agent terminal FAILED to start: {e}"));
-                self.log
-                    .push(format!("agent terminal failed to start: {e}"));
-                self.error = Some(format!(
-                    "The sandboxed shell failed to start: {e}\n(details in {})",
-                    session.display()
-                ));
             }
         }
     }
