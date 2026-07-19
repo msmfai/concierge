@@ -2535,6 +2535,39 @@ impl App {
                     });
             });
 
+        // The modpack banner + action bar live in a FIXED bottom panel (above the
+        // log), so a long load-order list in the center can never bury them —
+        // Preview/Download/Apply stay anchored and always reachable. Rendered from
+        // the same concierge-ui Screen (zero drift) and OUTSIDE the plan guard, so
+        // the "no modpack open" banner and the disabled actions show even before a
+        // pack is opened.
+        egui::TopBottomPanel::bottom("actions").show(ctx, |ui| {
+            self.active_modpack_banner(ui);
+            ui.horizontal_wrapped(|ui| {
+                if let Some(tr) = self
+                    .screen()
+                    .transitions
+                    .iter()
+                    .find(|t| t.id == "open_preview")
+                    .cloned()
+                {
+                    self.transition_button(ui, &tr);
+                }
+                let bar: Vec<concierge_ui::Transition> = self
+                    .screen()
+                    .transitions
+                    .into_iter()
+                    .filter(|t| concierge_ui::is_action_bar(&t.id))
+                    .collect();
+                for tr in &bar {
+                    self.transition_button(ui, tr);
+                }
+                if busy {
+                    ui.spinner();
+                }
+            });
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(err) = &self.error {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
@@ -2881,34 +2914,6 @@ impl App {
                     self.saves_panel(ui, busy);
                 }
             }
-
-            ui.separator();
-            // Make the active-modpack state unmissable right where the actions
-            // live: green when one is open, an amber call-to-action when not — so
-            // it's never ambiguous whether a profile is active, or why the action
-            // buttons below are greyed out.
-            self.active_modpack_banner(ui);
-            ui.horizontal(|ui| {
-                if let Some(tr) = self.screen().transitions.iter().find(|t| t.id == "open_preview").cloned() {
-                    self.transition_button(ui, &tr);
-                }
-                // The action-bar row is rendered FROM the concierge-ui Screen —
-                // the SAME view-model the headless text/automaton view uses — so
-                // its labels, enabled/guard state, and hovers can never drift
-                // from what an agent sees. Chrome (Preview/tabs/lock) stays put.
-                let bar: Vec<concierge_ui::Transition> = self
-                    .screen()
-                    .transitions
-                    .into_iter()
-                    .filter(|t| concierge_ui::is_action_bar(&t.id))
-                    .collect();
-                for tr in &bar {
-                    self.transition_button(ui, tr);
-                }
-                if busy {
-                    ui.spinner();
-                }
-            });
         });
 
         self.settings_panel(ctx);
