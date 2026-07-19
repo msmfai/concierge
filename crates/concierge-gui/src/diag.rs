@@ -2,7 +2,13 @@
 //! `env_logger`'s stderr is lost and a failed terminal spawn is otherwise
 //! invisible. We write logs NEXT TO THE EXECUTABLE (falling back to the temp
 //! dir when that isn't writable) so they can be read after the fact — e.g.
-//! synced back off the user's machine via a shared folder. Std-only.
+//! synced back off the user's machine via a shared folder.
+//!
+//! Every line is ALSO mirrored to a STABLE per-user location
+//! (`<config_dir>/concierge-gui.log`) so there is always ONE canonical log to
+//! grab regardless of where the exe was launched from — running a copy from
+//! `Downloads` used to scatter its log there, out of the synced folder, so a
+//! "nothing happened" report had no on-disk trace to read. Std-only.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -20,6 +26,23 @@ fn log_dir() -> &'static PathBuf {
             .filter(|d| is_writable(d))
             .unwrap_or_else(std::env::temp_dir)
     })
+}
+
+/// A stable, per-user log location that does NOT move with the exe — so no
+/// matter which copy of Concierge was launched (Bear Share, `Downloads`, a
+/// re-install), its log lands in the same findable place. `None` if the
+/// directory can't be created.
+fn stable_log_file() -> Option<&'static PathBuf> {
+    static F: OnceLock<Option<PathBuf>> = OnceLock::new();
+    F.get_or_init(|| {
+        let dir = concierge_platform::config_dir();
+        std::fs::create_dir_all(&dir).ok()?;
+        // Only keep it if it's a DIFFERENT file from the exe-adjacent one, so we
+        // don't double-write the same path.
+        let f = dir.join("concierge-gui.log");
+        (f != log_dir().join("concierge-gui.log")).then_some(f)
+    })
+    .as_ref()
 }
 
 fn is_writable(dir: &Path) -> bool {
@@ -52,14 +75,24 @@ fn stamp() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Append a line to the diagnostics log (best-effort; never panics).
+/// Append a line to the diagnostics log (best-effort; never panics). Written to
+/// BOTH the exe-adjacent log (travels with the app / syncs back via Bear Share)
+/// and the stable per-user log (always the same findable place).
 pub fn log(msg: &str) {
+    let line = format!("[{}] {msg}\n", stamp());
+    append(&log_file(), &line);
+    if let Some(stable) = stable_log_file() {
+        append(stable, &line);
+    }
+}
+
+fn append(path: &Path, line: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_file())
+        .open(path)
     {
-        let _ = writeln!(f, "[{}] {msg}", stamp());
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
@@ -77,5 +110,20 @@ pub fn start_session() {
     if let Ok(exe) = std::env::current_exe() {
         log(&format!("exe: {}", exe.display()));
     }
-    log(&format!("logs: {}", log_file().display()));
+    log(&format!(
+        "args: {:?}",
+        std::env::args().skip(1).collect::<Vec<_>>()
+    ));
+    log(&format!("log (beside exe): {}", log_file().display()));
+    if let Some(stable) = stable_log_file() {
+        log(&format!("log (stable):     {}", stable.display()));
+    }
+    log(&format!(
+        "nxm inbox: {}",
+        concierge::nexus::nxm_inbox_path().display()
+    ));
+    log(&format!(
+        "nexus api key configured: {}",
+        concierge::nexus::api_key().is_ok()
+    ));
 }

@@ -6,6 +6,12 @@
 //! the single source of truth; the UI writes it and re-evals. All real work
 //! lives in the core + accelerator crates; this is a thin shell.
 
+// On Windows this is a GUI app: without this it's a console-subsystem binary,
+// so EVERY launch — including the short-lived process an `nxm://` "Mod Manager
+// Download" spawns to hand off to the running instance — pops a blank cmd
+// window. Suppress it in release builds; keep the console in debug so `cargo
+// run` still shows stderr. (Diagnostics go to the file log regardless.)
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 
 mod diag;
@@ -2209,8 +2215,11 @@ fn which_agent_available() -> bool {
 fn agent_on_path(name: &str) -> bool {
     #[cfg(windows)]
     let mut c = {
+        use std::os::windows::process::CommandExt as _;
         let mut c = std::process::Command::new("cmd");
         c.args(["/c", name, "--version"]);
+        // Suppress the console window this would otherwise flash (CREATE_NO_WINDOW).
+        c.creation_flags(0x0800_0000);
         c
     };
     #[cfg(not(windows))]
@@ -2323,7 +2332,15 @@ impl App {
         // nxm handoff: pin any links dropped in the inbox (browser download /
         // `concierge nxm <url>` reaching this running instance). Poll ~1/s even
         // when idle so a launcher-handed-off download appears promptly.
-        for url in concierge::nexus::drain_nxm_inbox() {
+        let inbox = concierge::nexus::drain_nxm_inbox();
+        if !inbox.is_empty() {
+            diag::log(&format!(
+                "nxm inbox: drained {} url(s) from {}: {inbox:?}",
+                inbox.len(),
+                concierge::nexus::nxm_inbox_path().display()
+            ));
+        }
+        for url in inbox {
             self.handle_nxm(&url);
         }
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
@@ -4280,11 +4297,14 @@ impl App {
                                                 )
                                                 .clicked()
                                             {
-                                                let _ = concierge_platform::open_url(
-                                                    &concierge::nexus::file_page_url(
-                                                        d, *mod_id, *file_id,
-                                                    ),
+                                                let page = concierge::nexus::file_page_url(
+                                                    d, *mod_id, *file_id,
                                                 );
+                                                diag::log(&format!(
+                                                    "browser: opening Nexus page (button click, \
+                                                     mod {mod_id} file {file_id}): {page}"
+                                                ));
+                                                let _ = concierge_platform::open_url(&page);
                                             }
                                         }
                                         (concierge::plan::Source::Url { .. }, _) => {
@@ -4621,17 +4641,40 @@ impl App {
     /// otherwise add it unpinned. The token download blocks briefly — it's a
     /// deliberate click, and it's the sanctioned free-download path.
     fn handle_nxm(&mut self, url: &str) {
+        diag::log(&format!("nxm: handle_nxm received url={url}"));
         let Some(n) = concierge::nexus::parse_nxm(url) else {
+            diag::log(&format!("nxm: ABORT — not a valid nxm:// link: {url}"));
             self.error = Some(format!("not a valid nxm:// link: {url}"));
             return;
         };
+        diag::log(&format!(
+            "nxm: parsed domain={} mod_id={} file_id={} has_token={} has_expires={}",
+            n.domain,
+            n.mod_id,
+            n.file_id,
+            n.key.is_some(),
+            n.expires.is_some()
+        ));
         if self.busy.swap(true, Ordering::SeqCst) {
+            diag::log("nxm: ABORT — already busy with another download; will not start a second");
             return;
         }
         let Some(repo) = self.active_repo() else {
+            diag::log(
+                "nxm: ABORT — no active modpack/profile open, so there is nowhere to download to. \
+                 Open (or create) a modpack first, then click the download. Nothing happened.",
+            );
+            self.error = Some(
+                "Open a modpack first — an nxm download needs a profile to land in.".to_owned(),
+            );
             self.busy.store(false, Ordering::SeqCst);
             return;
         };
+        diag::log(&format!(
+            "nxm: active modpack — profile={} workspace={}",
+            repo.profile.display(),
+            repo.workspace.display()
+        ));
         let (tx, busy, reload) = (
             self.log_tx.clone(),
             Arc::clone(&self.busy),
@@ -4639,32 +4682,62 @@ impl App {
         );
         // Download (network) + manifest write happen OFF the UI thread.
         std::thread::spawn(move || {
-            let _ = tx.send(format!("> nxm {} file {}", n.mod_id, n.file_id));
-            let name = concierge_ai::tools::catalog_names(&repo, &n.domain, &[n.mod_id])
-                .ok()
-                .and_then(|v| v.into_iter().next().map(|(_, mn)| mn))
-                .unwrap_or_else(|| format!("nexus-mod-{}", n.mod_id));
+            // Mirror worker progress to BOTH the in-app log panel (tx) and the
+            // on-disk firehose (diag), so a "nothing happened" report is fully
+            // reconstructable from the synced-back log.
+            macro_rules! say {
+                ($($a:tt)*) => {{ let m = format!($($a)*); let _ = tx.send(m.clone()); diag::log(&m); }};
+            }
+            say!("> nxm {} file {}", n.mod_id, n.file_id);
+            let name = match concierge_ai::tools::catalog_names(&repo, &n.domain, &[n.mod_id]) {
+                Ok(v) => v.into_iter().next().map_or_else(
+                    || {
+                        diag::log(&format!(
+                            "nxm: catalog had no name for mod {} — using placeholder",
+                            n.mod_id
+                        ));
+                        format!("nexus-mod-{}", n.mod_id)
+                    },
+                    |(_, mn)| mn,
+                ),
+                Err(e) => {
+                    diag::log(&format!(
+                        "nxm: catalog name lookup failed ({e}) — using placeholder"
+                    ));
+                    format!("nexus-mod-{}", n.mod_id)
+                }
+            };
+            say!("nxm: resolved mod name = '{name}'");
             let (mut md5, mut file) = (String::new(), String::new());
-            if let (Some(k), Some(exp), Ok(api)) = (&n.key, &n.expires, concierge::nexus::api_key())
-            {
-                match concierge::store::acquire_nxm(
-                    &repo, &n.domain, n.mod_id, n.file_id, &api, k, exp,
-                ) {
-                    Ok((got, fname)) => {
-                        let _ = tx.send(format!("nxm: downloaded + pinned '{fname}' (md5 {got})"));
-                        md5 = got;
-                        file = fname;
-                    }
-                    Err(e) => {
-                        let _ =
-                            tx.send(format!("nxm: token download failed ({e}); adding unpinned"));
+            let api = concierge::nexus::api_key();
+            match (&n.key, &n.expires, &api) {
+                (Some(k), Some(exp), Ok(api)) => {
+                    say!("nxm: token present + api key configured — starting 1-click download…");
+                    match concierge::store::acquire_nxm(
+                        &repo, &n.domain, n.mod_id, n.file_id, api, k, exp,
+                    ) {
+                        Ok((got, fname)) => {
+                            say!("nxm: downloaded + pinned '{fname}' (md5 {got})");
+                            md5 = got;
+                            file = fname;
+                        }
+                        Err(e) => say!("nxm: token download FAILED ({e}); adding unpinned"),
                     }
                 }
+                (None, _, _) | (_, None, _) => say!(
+                    "nxm: link carries NO download token (a bare nxm link, not a \"Mod Manager \
+                     Download\" click) — adding the mod unpinned, no file fetched"
+                ),
+                (_, _, Err(e)) => say!(
+                    "nxm: token present but NO Nexus API key configured ({e}) — cannot download; \
+                     set your API key in Settings. Adding the mod unpinned."
+                ),
             }
             // nxm links don't carry the mod version; leave it to default ("1")
             // until a fetch/resolve fills it in.
             let entry = nexus_new_mod(name, n.mod_id, n.file_id, md5, file, String::new());
             write_added_mod(&repo, &entry, &tx, &reload);
+            say!("nxm: done (mod {} file {})", n.mod_id, n.file_id);
             busy.store(false, Ordering::SeqCst);
         });
     }
