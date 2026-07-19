@@ -8,6 +8,28 @@
 
 use std::path::PathBuf;
 
+/// A process-wide diagnostic sink. The GUI wires this to its file logger at
+/// startup so CORE paths (browser opens, fetch decisions) land in the SAME log
+/// as the GUI's own events — the one place to read the full sequence. Unset in
+/// the CLI/tests (a no-op).
+static DIAG_LOGGER: std::sync::RwLock<Option<fn(&str)>> = std::sync::RwLock::new(None);
+
+/// Route this crate's diagnostics to `f` (e.g. the GUI's file logger).
+pub fn set_diag_logger(f: fn(&str)) {
+    if let Ok(mut g) = DIAG_LOGGER.write() {
+        *g = Some(f);
+    }
+}
+
+/// Emit a diagnostic line to the wired sink (no-op if none). Best-effort.
+pub fn diag(msg: &str) {
+    if let Ok(g) = DIAG_LOGGER.read() {
+        if let Some(f) = *g {
+            f(msg);
+        }
+    }
+}
+
 /// A helper binary could not be located by any [`find_tool`] strategy.
 #[derive(Debug, thiserror::Error)]
 #[error("helper binary `{name}` not found — put it on PATH, next to the app, or set {env}")]
@@ -80,6 +102,10 @@ pub fn tool_command(name: &str) -> Result<std::process::Command, MissingTool> {
 /// Open a URL or file path with the OS default handler (macOS `open`, Windows
 /// `start`, Linux `xdg-open`) — e.g. a `steam://` URL or a mod page.
 pub fn open_url(target: &str) -> std::io::Result<std::process::ExitStatus> {
+    // Log EVERY browser/URL open, from whatever code path — so "Download opened
+    // two windows" is provable: the log shows each open, its URL, and (via ms
+    // timestamps) whether they fired together or one at a time.
+    diag(&format!("open_url: launching OS handler for {target}"));
     let mut cmd = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         c.arg(target);
@@ -102,7 +128,15 @@ pub fn open_url(target: &str) -> std::io::Result<std::process::ExitStatus> {
         c.arg(target);
         c
     };
-    cmd.status()
+    let r = cmd.status();
+    diag(&format!(
+        "open_url: OS handler for {target} -> {}",
+        match &r {
+            Ok(s) => format!("exit {s}"),
+            Err(e) => format!("spawn error: {e}"),
+        }
+    ));
+    r
 }
 
 /// Create a directory symlink `link` → `target`, cross-platform: a POSIX

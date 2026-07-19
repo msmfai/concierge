@@ -206,6 +206,11 @@ fn main() -> eframe::Result {
     // A GUI app has no console on Windows, so also log to a file beside the exe
     // (see diag) — that's how a failed terminal spawn becomes readable.
     diag::start_session();
+    // Route core-crate diagnostics (every open_url, every fetch decision) into
+    // the SAME file log as the GUI's own events, so the whole sequence is in one
+    // place — e.g. a browser open from the fetch path is captured, not just the
+    // ones the GUI triggers directly.
+    concierge_platform::set_diag_logger(diag::log);
     // Wire every family/leaf adapter crate into core's resolver at startup.
     concierge_games::register();
     // The GUI never blasts a browser tab per uncached mod on Download — it drives
@@ -1385,6 +1390,14 @@ impl App {
     }
 
     fn reload_plan(&mut self) {
+        diag::log(&format!(
+            "reload_plan: reloading manifest (download popup currently {})",
+            if self.download_session_open {
+                "OPEN"
+            } else {
+                "closed"
+            }
+        ));
         self.error = None;
         self.plan = None;
         self.manifest = None;
@@ -2412,9 +2425,9 @@ impl App {
         // Log window focus / minimise transitions — a nxm one-click launching the
         // handler can steal focus or minimise/restore the window on Windows, and
         // this makes that visible in the log, timestamped against the clicks.
-        let (focused, minimized) = ctx.input(|i| {
+        let (focused, minimized, close_req) = ctx.input(|i| {
             let vp = i.viewport();
-            (vp.focused, vp.minimized)
+            (vp.focused, vp.minimized, vp.close_requested())
         });
         if focused != self.diag_focused {
             diag::log(&format!("window: focused={focused:?}"));
@@ -2423,6 +2436,9 @@ impl App {
         if minimized != self.diag_minimized {
             diag::log(&format!("window: minimized={minimized:?}"));
             self.diag_minimized = minimized;
+        }
+        if close_req {
+            diag::log("window: close requested");
         }
         if self.download_session_open != self.diag_popup_open {
             diag::log(&format!(
