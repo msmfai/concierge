@@ -1129,6 +1129,14 @@ impl App {
     /// behaviour. Every projected widget renders FROM the screen and calls this —
     /// so App mutates ONLY through here, never from a hand-coded widget.
     fn dispatch_intent(&mut self, id: &str) {
+        // The GUI may only act on ids in the view-model's CLOSED action alphabet —
+        // the same set the machine/headless view drives. A hand-rendered control
+        // that dispatched a novel id (drift) trips this in debug/test builds.
+        debug_assert!(
+            concierge_ui::is_action_id(id),
+            "GUI dispatched '{id}', which is not in the shared action vocabulary \
+             (concierge_ui::is_action_id) — the two views would drift"
+        );
         // Every user action is logged by its stable id, so a synced-back log
         // shows the EXACT click sequence — no more inferring what was pressed.
         diag::log(&format!("click: {id}"));

@@ -91,95 +91,109 @@ impl UiState {
     }
 }
 
-/// An intent a widget fires — the id half of the automaton's alphabet. The GUI
-/// maps each to its concrete behaviour; the text driver matches on the id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum Intent {
-    Download,
-    Apply,
-    Verify,
-    Play,
-    Uninstall,
-    SortLoad,
-    Requirements,
-    FindPatches,
-    MergeConflicts,
-    Conflicts,
-    ToggleLock,
-    Undo,
-    OpenSettings,
-    CloseSettings,
-    OpenBrowse,
-    CloseBrowse,
-    OpenDownloads,
-    CloseDownloads,
-    PauseAllDownloads,
-    ResumeAllDownloads,
-    ClearDownloads,
-    OpenPreview,
-    ClosePreview,
-    SelectSetupTab,
-    SelectInstalledTab,
-    ConfirmYes,
-    ConfirmNo,
-    CheckAccount,
-    BrowseSearch,
-    NxmAdd,
-    AiSend,
-    AiInterrupt,
-    AiWork,
-    Rescan,
-    DeleteProfile,
-    CreateEmpty,
-    CreateClone,
-    NewModpackAi,
+/// Defines [`Intent`], its stable string [`id`](Intent::id), and the exhaustive
+/// [`Intent::ALL`] list from a SINGLE source — so the enum, its ids, and the
+/// closed action alphabet cannot drift from each other. Adding an action means
+/// adding one line here, and it automatically appears in the vocabulary both
+/// views validate against.
+macro_rules! intents {
+    ($($variant:ident => $id:literal),+ $(,)?) => {
+        /// An intent a widget fires — the id half of the automaton's alphabet. The
+        /// GUI maps each to its behaviour; the text driver matches on the id.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+        pub enum Intent { $($variant),+ }
+
+        impl Intent {
+            /// Stable id used in scripts (`click apply`) and the drift guard.
+            #[must_use]
+            pub const fn id(self) -> &'static str {
+                match self { $(Self::$variant => $id),+ }
+            }
+            /// Every intent — the fixed half of the closed action vocabulary.
+            pub const ALL: &'static [Intent] = &[$(Intent::$variant),+];
+        }
+    };
 }
 
-impl Intent {
-    /// Stable id used in scripts (`click apply`) and the drift guard.
-    #[must_use]
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::Download => "download",
-            Self::Apply => "apply",
-            Self::Verify => "verify",
-            Self::Play => "play",
-            Self::Uninstall => "uninstall",
-            Self::SortLoad => "sort_load",
-            Self::Requirements => "requirements",
-            Self::FindPatches => "find_patches",
-            Self::MergeConflicts => "merge_conflicts",
-            Self::Conflicts => "conflicts",
-            Self::ToggleLock => "toggle_lock",
-            Self::Undo => "undo",
-            Self::OpenSettings => "open_settings",
-            Self::CloseSettings => "close_settings",
-            Self::OpenBrowse => "open_browse",
-            Self::CloseBrowse => "close_browse",
-            Self::OpenDownloads => "open_downloads",
-            Self::CloseDownloads => "close_downloads",
-            Self::PauseAllDownloads => "dl_pause_all",
-            Self::ResumeAllDownloads => "dl_resume_all",
-            Self::ClearDownloads => "dl_clear",
-            Self::OpenPreview => "open_preview",
-            Self::ClosePreview => "close_preview",
-            Self::SelectSetupTab => "tab_setup",
-            Self::SelectInstalledTab => "tab_installed",
-            Self::ConfirmYes => "confirm_yes",
-            Self::ConfirmNo => "confirm_no",
-            Self::CheckAccount => "check_account",
-            Self::BrowseSearch => "browse_search",
-            Self::NxmAdd => "nxm_add",
-            Self::AiSend => "ai_send",
-            Self::AiInterrupt => "ai_interrupt",
-            Self::AiWork => "ai_work",
-            Self::Rescan => "rescan",
-            Self::DeleteProfile => "delete_profile",
-            Self::CreateEmpty => "create_empty",
-            Self::CreateClone => "create_clone",
-            Self::NewModpackAi => "new_modpack_ai",
-        }
-    }
+intents! {
+    Download => "download",
+    Apply => "apply",
+    Verify => "verify",
+    Play => "play",
+    Uninstall => "uninstall",
+    SortLoad => "sort_load",
+    Requirements => "requirements",
+    FindPatches => "find_patches",
+    MergeConflicts => "merge_conflicts",
+    Conflicts => "conflicts",
+    ToggleLock => "toggle_lock",
+    Undo => "undo",
+    OpenSettings => "open_settings",
+    CloseSettings => "close_settings",
+    OpenBrowse => "open_browse",
+    CloseBrowse => "close_browse",
+    OpenDownloads => "open_downloads",
+    CloseDownloads => "close_downloads",
+    PauseAllDownloads => "dl_pause_all",
+    ResumeAllDownloads => "dl_resume_all",
+    ClearDownloads => "dl_clear",
+    OpenPreview => "open_preview",
+    ClosePreview => "close_preview",
+    SelectSetupTab => "tab_setup",
+    SelectInstalledTab => "tab_installed",
+    ConfirmYes => "confirm_yes",
+    ConfirmNo => "confirm_no",
+    CheckAccount => "check_account",
+    BrowseSearch => "browse_search",
+    NxmAdd => "nxm_add",
+    AiSend => "ai_send",
+    AiInterrupt => "ai_interrupt",
+    AiWork => "ai_work",
+    Rescan => "rescan",
+    DeleteProfile => "delete_profile",
+    CreateEmpty => "create_empty",
+    CreateClone => "create_clone",
+    NewModpackAi => "new_modpack_ai",
+}
+
+/// The parameterised `<prefix>:<arg>` action ids (raw transitions the GUI builds
+/// dynamically — a mod row, a catalog hit, a download job). Together with every
+/// [`Intent::id`], these are the COMPLETE, CLOSED action alphabet — the single
+/// vocabulary both views share, so a control one view offers and the other can't
+/// is impossible.
+pub const RAW_ACTION_PREFIXES: &[&str] = &[
+    "add_hit:",
+    "add_game:",
+    "select_game:",
+    "select_profile:",
+    "mod_toggle:",
+    "mod_select:",
+    "mod_up:",
+    "mod_down:",
+    "mod_remove:",
+    "mod_move:",
+    "rollback:",
+    "restore_save:",
+    "ai_quick:",
+    "dl_pause:",
+    "dl_resume:",
+    "dl_cancel:",
+    "nxm:",
+];
+
+/// Fixed action ids that aren't [`Intent`]s (rendered via `raw(...)`): the
+/// add-mod form's open/confirm buttons.
+pub const FIXED_RAW_IDS: &[&str] = &["add_open", "add_confirm"];
+
+/// Is `id` a member of the closed action vocabulary — a fixed [`Intent`] id, a
+/// fixed raw id, or a known parameterised prefix? Both views validate every
+/// dispatched/clicked id against this, so neither can act on an id the other
+/// doesn't know.
+#[must_use]
+pub fn is_action_id(id: &str) -> bool {
+    Intent::ALL.iter().any(|i| i.id() == id)
+        || FIXED_RAW_IDS.contains(&id)
+        || RAW_ACTION_PREFIXES.iter().any(|p| id.starts_with(p))
 }
 
 /// A catalog search result — id-keyed so its "add" button (`add_hit:<mod_id>`)
@@ -1231,6 +1245,65 @@ mod tests {
     fn build_screen_is_a_pure_function_of_facts() {
         let f = base_facts();
         assert_eq!(build_screen(&f), build_screen(&f));
+    }
+
+    // The closed-vocabulary contract: the view-model can NEVER project a
+    // transition whose id isn't in the shared action alphabet — otherwise a
+    // control could exist that the machine view can't name. Checked across every
+    // reachable window/mode.
+    #[test]
+    fn every_projected_transition_is_a_known_action() {
+        let mut variants = vec![base_facts()];
+        // toggle each window/mode so all states are exercised
+        for mutate in [
+            |f: &mut UiFacts| f.settings_open = true,
+            |f: &mut UiFacts| f.browse_open = true,
+            |f: &mut UiFacts| f.downloads_open = true,
+            |f: &mut UiFacts| f.diff_open = true,
+            |f: &mut UiFacts| f.busy = true,
+            |f: &mut UiFacts| f.mutable = false,
+            |f: &mut UiFacts| f.has_active_profile = false,
+            |f: &mut UiFacts| f.confirm = Some(ConfirmKind::Uninstall),
+        ] {
+            let mut f = base_facts();
+            mutate(&mut f);
+            variants.push(f);
+        }
+        // populate the dynamic rows so their raw ids are generated too
+        for f in &mut variants {
+            f.downloads = vec![DownloadRow {
+                id: 1,
+                name: "m".into(),
+                state: "downloading".into(),
+                done: 0,
+                total: None,
+                bytes_per_sec: 0,
+            }];
+            f.versions = vec![VersionRow {
+                number: 1,
+                hash: "h".into(),
+            }];
+            f.saves = vec!["s".into()];
+        }
+        for f in &variants {
+            for tr in build_screen(f).transitions {
+                assert!(
+                    is_action_id(&tr.id),
+                    "transition '{}' is not in the closed action vocabulary",
+                    tr.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn intent_ids_are_unique_and_complete() {
+        let ids: std::collections::BTreeSet<&str> = Intent::ALL.iter().map(|i| i.id()).collect();
+        assert_eq!(ids.len(), Intent::ALL.len(), "duplicate Intent id");
+        // spot-check the macro wired id() to ALL correctly
+        assert!(is_action_id("download") && is_action_id("dl_pause_all"));
+        assert!(is_action_id("dl_pause:7") && is_action_id("mod_toggle:x"));
+        assert!(!is_action_id("totally_made_up") && !is_action_id("set_bandwidth"));
     }
 
     // Drift guard for the download manager: the whole surface (open, the global
