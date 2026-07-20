@@ -5,11 +5,10 @@
 
 use eframe::egui;
 
-use concierge::download_manager::{self, JobState};
 use concierge::settings::{Settings, Theme, UpdateChannel};
 
 /// Format a byte count as a compact human string (B / KiB / MiB / GiB).
-fn human(bytes: u64) -> String {
+pub fn human(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
     let mut v = bytes;
     let mut u = 0usize;
@@ -21,7 +20,7 @@ fn human(bytes: u64) -> String {
 }
 
 /// Integer percent (0..=100) of done/total, avoiding float `as` conversions.
-fn percent(done: u64, total: Option<u64>) -> u16 {
+pub fn percent(done: u64, total: Option<u64>) -> u16 {
     total
         .and_then(|t| (t > 0).then(|| u16::try_from(done.saturating_mul(100) / t).unwrap_or(100)))
         .unwrap_or(0)
@@ -160,99 +159,4 @@ pub fn settings_section(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         .changed();
 
     changed
-}
-
-/// The background download-manager window: live queue + controls.
-pub fn manager_window(ctx: &egui::Context, open: &mut bool) {
-    egui::Window::new("Downloads")
-        .open(open)
-        .resizable(true)
-        .default_width(460.0)
-        .show(ctx, |ui| {
-            let mgr = download_manager::global();
-            ui.horizontal(|ui| {
-                if mgr.is_paused_globally() {
-                    if ui.button("\u{25b6} Resume all").clicked() {
-                        mgr.resume_all();
-                    }
-                } else if ui.button("\u{23f8} Pause all").clicked() {
-                    mgr.pause_all();
-                }
-                if ui.button("Clear finished").clicked() {
-                    mgr.clear_finished();
-                }
-            });
-            ui.separator();
-            let jobs = mgr.snapshot();
-            if jobs.is_empty() {
-                ui.weak("No downloads yet. Click Download on a modpack to start.");
-                return;
-            }
-            // Keep repainting while anything is active so bars move live.
-            let active = jobs
-                .iter()
-                .any(|j| matches!(j.state, JobState::Downloading | JobState::Paused));
-            if active {
-                ctx.request_repaint_after(std::time::Duration::from_millis(300));
-            }
-            egui::ScrollArea::vertical()
-                .max_height(360.0)
-                .show(ui, |ui| {
-                    for j in jobs {
-                        ui.horizontal(|ui| {
-                            let frac = f32::from(percent(j.done, j.total)) / 100.0;
-                            let size = j.total.map_or_else(
-                                || human(j.done),
-                                |t| format!("{} / {}", human(j.done), human(t)),
-                            );
-                            let label = match &j.state {
-                                JobState::Downloading => {
-                                    format!("{} — {size} @ {}/s", j.name, human(j.bytes_per_sec))
-                                }
-                                JobState::Paused => format!("{} — paused ({size})", j.name),
-                                JobState::Done => format!("{} — \u{2713} done", j.name),
-                                JobState::Cancelled => format!("{} — cancelled", j.name),
-                                JobState::Failed(e) => format!("{} — failed: {e}", j.name),
-                            };
-                            ui.add(
-                                egui::ProgressBar::new(frac)
-                                    .desired_width(300.0)
-                                    .text(label),
-                            );
-                            match j.state {
-                                JobState::Downloading => {
-                                    if ui.small_button("\u{23f8}").on_hover_text("pause").clicked()
-                                    {
-                                        mgr.pause(j.id);
-                                    }
-                                    if ui
-                                        .small_button("\u{2715}")
-                                        .on_hover_text("cancel")
-                                        .clicked()
-                                    {
-                                        mgr.cancel(j.id);
-                                    }
-                                }
-                                JobState::Paused => {
-                                    if ui
-                                        .small_button("\u{25b6}")
-                                        .on_hover_text("resume")
-                                        .clicked()
-                                    {
-                                        mgr.resume(j.id);
-                                    }
-                                    if ui
-                                        .small_button("\u{2715}")
-                                        .on_hover_text("cancel")
-                                        .clicked()
-                                    {
-                                        mgr.cancel(j.id);
-                                    }
-                                }
-                                JobState::Done | JobState::Cancelled | JobState::Failed(_) => {}
-                            }
-                        });
-                    }
-                });
-        });
 }

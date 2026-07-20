@@ -33,6 +33,7 @@ pub struct Headless {
     tab: Tab,
     settings_open: bool,
     browse_open: bool,
+    downloads_open: bool,
     diff_open: bool,
     confirm: Option<(ConfirmKind, String)>,
     search: String,
@@ -176,6 +177,7 @@ impl Headless {
             tab: Tab::Setup,
             settings_open: false,
             browse_open: false,
+            downloads_open: false,
             diff_open: false,
             confirm: None,
             search: String::new(),
@@ -250,6 +252,9 @@ impl Headless {
             ai_busy: false,
             settings_open: self.settings_open,
             browse_open: self.browse_open,
+            downloads_open: self.downloads_open,
+            downloads_paused_all: false,
+            downloads: Vec::new(),
             diff_open: self.diff_open,
             confirm: self.confirm.as_ref().map(|(k, _)| *k),
             confirm_prompt: self.confirm.as_ref().map(|(_, p)| p.clone()),
@@ -344,6 +349,14 @@ impl Headless {
             "close_browse" => {
                 self.browse_open = false;
                 "browse closed".into()
+            }
+            "open_downloads" => {
+                self.downloads_open = true;
+                "downloads opened".into()
+            }
+            "close_downloads" => {
+                self.downloads_open = false;
+                "downloads closed".into()
             }
             "open_preview" => {
                 self.diff_open = true;
@@ -761,6 +774,7 @@ mod tests {
             tab: Tab::Setup,
             settings_open: false,
             browse_open: false,
+            downloads_open: false,
             diff_open: false,
             confirm: None,
             search: String::new(),
@@ -825,6 +839,24 @@ mod tests {
         let mut out = Vec::new();
         let code = m.run_script("assert state=Locked\n", &mut out);
         assert_eq!(code, 1);
+    }
+
+    // The agent/headless view can navigate + drive the background download manager
+    // exactly as a human does — proof the two views share this surface.
+    #[test]
+    fn agent_can_drive_the_download_manager() {
+        let mut m = model();
+        let script = "assert state=Editing\n\
+                      click open_downloads\n\
+                      assert state=Downloads\n\
+                      click dl_pause_all\n\
+                      click dl_clear\n\
+                      click close_downloads\n\
+                      assert state=Editing\n";
+        let mut out = Vec::new();
+        let code = m.run_script(script, &mut out);
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(code, 0, "{text}");
     }
 
     #[test]

@@ -41,6 +41,7 @@ TRANSITIONS:
   new_modpack_ai   new modpack (AI)         [guarded: name the profile first]
   open_settings    Settings                 [enabled]  -> Settings
   open_preview     Preview                  [enabled]  -> PreviewChanges
+  open_downloads   ⬇ Downloads              [enabled]  -> Downloads
   open_browse      🔎 browse                 [enabled]  -> Browse
  *tab_setup        📝 Setup                  [enabled]
   tab_installed    Installed                [enabled]

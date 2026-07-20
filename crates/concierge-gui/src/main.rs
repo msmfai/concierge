@@ -837,6 +837,27 @@ impl App {
             ai_busy: self.term.as_ref().is_some_and(|t| !t.finished()),
             settings_open: self.settings_open,
             browse_open: self.browse_open,
+            downloads_open: self.downloads_window_open,
+            downloads_paused_all: concierge::download_manager::global().is_paused_globally(),
+            downloads: concierge::download_manager::global()
+                .snapshot()
+                .into_iter()
+                .map(|j| concierge_ui::DownloadRow {
+                    id: j.id,
+                    name: j.name,
+                    state: match j.state {
+                        concierge::download_manager::JobState::Downloading => "downloading",
+                        concierge::download_manager::JobState::Paused => "paused",
+                        concierge::download_manager::JobState::Done => "done",
+                        concierge::download_manager::JobState::Cancelled => "cancelled",
+                        concierge::download_manager::JobState::Failed(_) => "failed",
+                    }
+                    .to_owned(),
+                    done: j.done,
+                    total: j.total,
+                    bytes_per_sec: j.bytes_per_sec,
+                })
+                .collect(),
             diff_open: self.diff_open,
             confirm,
             confirm_prompt: self.confirm.as_ref().map(Confirm::prompt),
@@ -1150,6 +1171,28 @@ impl App {
                 }
             }
             "close_browse" => self.browse_open = false,
+            // Download manager — projected so the headless/agent view drives the
+            // same controls (no direct manager calls scattered through the GUI).
+            "open_downloads" => self.downloads_window_open = true,
+            "close_downloads" => self.downloads_window_open = false,
+            "dl_pause_all" => concierge::download_manager::global().pause_all(),
+            "dl_resume_all" => concierge::download_manager::global().resume_all(),
+            "dl_clear" => concierge::download_manager::global().clear_finished(),
+            _ if id.starts_with("dl_pause:") => {
+                if let Ok(n) = id.trim_start_matches("dl_pause:").parse::<u64>() {
+                    concierge::download_manager::global().pause(n);
+                }
+            }
+            _ if id.starts_with("dl_resume:") => {
+                if let Ok(n) = id.trim_start_matches("dl_resume:").parse::<u64>() {
+                    concierge::download_manager::global().resume(n);
+                }
+            }
+            _ if id.starts_with("dl_cancel:") => {
+                if let Ok(n) = id.trim_start_matches("dl_cancel:").parse::<u64>() {
+                    concierge::download_manager::global().cancel(n);
+                }
+            }
             "browse_search" => self.do_browse_search(),
             "nxm_add" => {
                 let url = std::mem::take(&mut self.nxm_input);
@@ -3005,7 +3048,7 @@ impl App {
         });
 
         self.settings_panel(ctx);
-        downloads::manager_window(ctx, &mut self.downloads_window_open);
+        self.downloads_window(ctx);
         self.diff_window(ctx);
         self.browse_window(ctx);
         self.download_window(ctx);
@@ -3271,7 +3314,11 @@ impl App {
                         .on_hover_text("the background download manager (queue, speeds, pause)")
                         .clicked()
                     {
-                        self.downloads_window_open = !self.downloads_window_open;
+                        self.dispatch_intent(if self.downloads_window_open {
+                            "close_downloads"
+                        } else {
+                            "open_downloads"
+                        });
                     }
                     self.render_kind(ui, concierge_ui::WidgetKind::Toggle);
                     if ui
@@ -4005,6 +4052,128 @@ impl App {
                 *s = status;
             }
         });
+    }
+
+    /// The background download-manager window. Renders the queue FROM the
+    /// projected `Screen.downloads` and routes every control through
+    /// `dispatch_intent` (the same ids the headless/agent view drives) — so the
+    /// human and LLM views can't drift.
+    fn downloads_window(&mut self, ctx: &eframe::egui::Context) {
+        use eframe::egui;
+        if !self.downloads_window_open {
+            return;
+        }
+        let screen = self.screen();
+        let rows = screen.downloads.clone();
+        // The projection offers `dl_resume_all` iff the manager is globally paused.
+        let paused_all = screen.transitions.iter().any(|t| t.id == "dl_resume_all");
+        let mut open = true;
+        let mut clicks: Vec<String> = Vec::new();
+        egui::Window::new("Downloads")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if paused_all {
+                        if ui.button("\u{25b6} Resume all").clicked() {
+                            clicks.push("dl_resume_all".to_owned());
+                        }
+                    } else if ui.button("\u{23f8} Pause all").clicked() {
+                        clicks.push("dl_pause_all".to_owned());
+                    }
+                    if ui.button("Clear finished").clicked() {
+                        clicks.push("dl_clear".to_owned());
+                    }
+                });
+                ui.separator();
+                if rows.is_empty() {
+                    ui.weak("No downloads yet. Click Download on a modpack to start.");
+                    return;
+                }
+                if rows
+                    .iter()
+                    .any(|d| d.state == "downloading" || d.state == "paused")
+                {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(300));
+                }
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        for d in &rows {
+                            ui.horizontal(|ui| {
+                                let frac = f32::from(downloads::percent(d.done, d.total)) / 100.0;
+                                let size = d.total.map_or_else(
+                                    || downloads::human(d.done),
+                                    |t| {
+                                        format!(
+                                            "{} / {}",
+                                            downloads::human(d.done),
+                                            downloads::human(t)
+                                        )
+                                    },
+                                );
+                                let label = match d.state.as_str() {
+                                    "downloading" => format!(
+                                        "{} — {size} @ {}/s",
+                                        d.name,
+                                        downloads::human(d.bytes_per_sec)
+                                    ),
+                                    "paused" => format!("{} — paused ({size})", d.name),
+                                    "done" => format!("{} — \u{2713} done", d.name),
+                                    "cancelled" => format!("{} — cancelled", d.name),
+                                    _ => format!("{} — failed", d.name),
+                                };
+                                ui.add(
+                                    egui::ProgressBar::new(frac)
+                                        .desired_width(300.0)
+                                        .text(label),
+                                );
+                                match d.state.as_str() {
+                                    "downloading" => {
+                                        if ui
+                                            .small_button("\u{23f8}")
+                                            .on_hover_text("pause")
+                                            .clicked()
+                                        {
+                                            clicks.push(format!("dl_pause:{}", d.id));
+                                        }
+                                        if ui
+                                            .small_button("\u{2715}")
+                                            .on_hover_text("cancel")
+                                            .clicked()
+                                        {
+                                            clicks.push(format!("dl_cancel:{}", d.id));
+                                        }
+                                    }
+                                    "paused" => {
+                                        if ui
+                                            .small_button("\u{25b6}")
+                                            .on_hover_text("resume")
+                                            .clicked()
+                                        {
+                                            clicks.push(format!("dl_resume:{}", d.id));
+                                        }
+                                        if ui
+                                            .small_button("\u{2715}")
+                                            .on_hover_text("cancel")
+                                            .clicked()
+                                        {
+                                            clicks.push(format!("dl_cancel:{}", d.id));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            });
+                        }
+                    });
+            });
+        if !open {
+            self.dispatch_intent("close_downloads");
+        }
+        for id in clicks {
+            self.dispatch_intent(&id);
+        }
     }
 
     /// Settings window — projected from the Screen: the info is the `settings`
