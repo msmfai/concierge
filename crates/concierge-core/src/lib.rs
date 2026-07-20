@@ -8,6 +8,7 @@
 pub mod build;
 pub mod check;
 pub mod diag;
+pub mod download;
 pub mod error;
 pub mod game;
 pub mod generations;
