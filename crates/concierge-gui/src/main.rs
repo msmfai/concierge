@@ -168,6 +168,12 @@ fn windows_has_vulkan_loader() -> bool {
         .exists()
 }
 
+/// The Nexus "API access" page — where a user creates/copies their personal API
+/// key. Full SSO/OAuth needs Concierge registered as a Nexus application (an
+/// external, approval-gated step); until then this one-click deep-link + paste +
+/// validate is the friction-minimal sign-in (roadmap 0.1, Vortex's own fallback).
+const NEXUS_API_ACCESS_URL: &str = "https://www.nexusmods.com/users/myaccount?tab=api+access";
+
 /// Shared liveness marker so an nxm-launched process can tell a Concierge is
 /// already running and hand off to it (rather than opening a second window).
 fn heartbeat_path() -> std::path::PathBuf {
@@ -3947,18 +3953,20 @@ impl App {
             let status = match concierge::nexus::api_key() {
                 Ok(k) => match concierge::nexus::validate(&k) {
                     Ok(u) if u.is_premium => {
-                        format!("Premium ({}) — downloads are automatic.", u.name)
+                        format!(
+                            "\u{2713} Signed in as {} (Premium) — downloads are automatic.",
+                            u.name
+                        )
                     }
                     Ok(u) => format!(
-                        "Free ({}) — Nexus requires one click per uncached mod ('Mod Manager \
-                         Download'); the API key is only for metadata + the click token, not bulk \
-                         download.",
+                        "\u{2713} Signed in as {} (free) — 1-click downloads work: click 'Mod \
+                         Manager Download' on each mod's Nexus page.",
                         u.name
                     ),
-                    Err(e) => format!("key set but validate failed: {e}"),
+                    Err(e) => format!("\u{26a0} Key set but sign-in failed: {e}"),
                 },
-                Err(_) => "No API key — optional (catalog/tracked/updates). Downloads still work \
-                           via click or ~/Downloads."
+                Err(_) => "Not signed in — paste a Nexus API key below to download mods (or drop \
+                           files in ~/Downloads and Apply)."
                     .to_owned(),
             };
             if let Ok(mut s) = slot.lock() {
@@ -3998,33 +4006,63 @@ impl App {
                     self.transition_button(ui, tr);
                 }
                 ui.separator();
-                ui.strong("Nexus Mods");
+                ui.strong("Nexus Mods account");
+                // Auto-validate once (status is empty until the first check) so a
+                // returning user sees "Signed in as X" without pressing anything.
+                if self
+                    .nexus_account
+                    .lock()
+                    .is_ok_and(|s| s.is_empty())
+                {
+                    self.check_account();
+                }
+                // Sign-in status (validated username/premium), when known.
+                let account = self
+                    .nexus_account
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                if !account.is_empty() {
+                    let signed_in = account.starts_with('\u{2713}');
+                    ui.colored_label(
+                        if signed_in {
+                            egui::Color32::from_rgb(120, 190, 120)
+                        } else {
+                            egui::Color32::from_rgb(200, 200, 200)
+                        },
+                        account,
+                    );
+                }
                 ui.label(
-                    "Paste a Nexus API key to download mods. A personal key is FREE to create \
-                     at nexusmods.com \u{2192} Account Settings \u{2192} API Keys, and a free key \
-                     is enough for 1-click (\"Mod Manager Download\") downloads on a free \
-                     account. Nexus Premium (paid) is only needed for fully-automatic fetching \
-                     with no per-file click. Either way you can also just download a file to \
-                     your Downloads folder and Apply \u{2014} no key needed for that.",
+                    "Sign in with a free Nexus API key to download mods: click \"Get my API \
+                     key\", copy it from the page that opens, paste it below, and Save. (A free \
+                     key is enough for 1-click downloads; Premium is only for fully-automatic \
+                     fetching. You can also drop files in your Downloads folder and Apply \u{2014} \
+                     no key needed for that.)",
                 );
+                if ui
+                    .button("\u{1f511} Get my API key")
+                    .on_hover_text("opens your Nexus API-access page in the browser")
+                    .clicked()
+                {
+                    let _ = concierge_platform::open_url(NEXUS_API_ACCESS_URL);
+                }
                 ui.horizontal(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.nexus_key_input)
                             .password(true)
                             .hint_text("paste Nexus API key"),
                     );
-                    if ui.button("Save key").clicked() {
+                    if ui.button("Save & sign in").clicked() {
                         let k = self.nexus_key_input.trim().to_owned();
                         if !k.is_empty() {
                             let dir = concierge_platform::config_dir();
                             let _ = std::fs::create_dir_all(&dir);
                             match std::fs::write(dir.join("nexus-api-key"), &k) {
                                 Ok(()) => {
-                                    self.notice = Some(
-                                        "Nexus API key saved — you can download mods now."
-                                            .to_owned(),
-                                    );
                                     self.nexus_key_input.clear();
+                                    // Validate immediately so the user sees "Signed in as X".
+                                    self.check_account();
                                 }
                                 Err(e) => self.error = Some(format!("couldn't save key: {e}")),
                             }
