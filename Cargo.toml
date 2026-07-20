@@ -26,6 +26,7 @@ members = [
     "crates/concierge-toolmerge",
     "crates/concierge-modpack-import",
     "crates/concierge-db",
+    "crates/concierge-update",
     "crates/concierge-esp",
     "crates/concierge-fomod",
     "crates/concierge-lint",
@@ -35,7 +36,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.9"
+version = "0.8.10"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/msmfai/concierge"
