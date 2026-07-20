@@ -24,10 +24,9 @@ pub enum FetchOutcome {
     Blocked { instructions: String },
 }
 
-/// Upper bound on mods fetched at once — the download manager's concurrency
-/// (roadmap 0.3). Keeps a big pack downloading in parallel without hammering the
-/// host or the network.
-const MAX_CONCURRENT_DOWNLOADS: usize = 4;
+/// Hard ceiling on mods fetched at once, regardless of the user setting — keeps a
+/// big pack from spawning an absurd number of connections.
+const MAX_CONCURRENT_DOWNLOADS: usize = 16;
 
 /// One ordered result slot for the bounded parallel fetch.
 type FetchSlot = std::sync::Mutex<Option<Result<(String, FetchOutcome)>>>;
@@ -48,7 +47,10 @@ pub fn fetch_all(repo: &Repo, plan: &Plan) -> Result<Vec<(String, FetchOutcome)>
     // click/manual path instead of hard-failing.
     let premium = nexus_premium();
     let n = plan.mods.len();
-    let concurrency = n.clamp(1, MAX_CONCURRENT_DOWNLOADS);
+    let want = crate::settings::get()
+        .max_parallel_downloads
+        .clamp(1, MAX_CONCURRENT_DOWNLOADS);
+    let concurrency = n.clamp(1, want);
     concierge_platform::diag(&format!(
         "fetch_all: {n} mod(s), premium={premium}, concurrency={concurrency}, auto_open_browser={}",
         auto_open_browser_enabled()
@@ -481,17 +483,9 @@ fn download(repo: &Repo, file: &str, url: &str) -> Result<PathBuf> {
         std::fs::copy(local, &tmp).ctx(&tmp)?;
         return Ok(tmp);
     }
-    // Resumable, retrying download (roadmap 0.3). Progress is logged once per MiB
-    // so a long download shows life without flooding the log.
-    let last_mib = std::cell::Cell::new(u64::MAX);
-    crate::download::fetch_to(url, &tmp, &|done, total| {
-        let mib = done / (1024 * 1024);
-        if mib != last_mib.get() {
-            last_mib.set(mib);
-            let of = total.map_or_else(String::new, |t| format!(" / {} MiB", t / (1024 * 1024)));
-            concierge_platform::diag(&format!("download: {file} {mib} MiB{of}"));
-        }
-    })?;
+    // Route through the background download manager: resumable + retrying, with
+    // live per-file progress/speed and pause/cancel/throttle visible in the UI.
+    crate::download_manager::global().download(file, url, &tmp)?;
     Ok(tmp)
 }
 

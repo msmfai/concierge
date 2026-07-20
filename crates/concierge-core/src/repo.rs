@@ -74,7 +74,10 @@ impl Repo {
     // --- shared cache (workspace) ------------------------------------------
 
     pub fn store(&self) -> PathBuf {
-        self.workspace.join("store")
+        // A user-configured download folder (Settings) overrides the default
+        // per-workspace `store/`. The cache is content-addressed either way, so a
+        // shared external folder dedupes across every workspace/profile.
+        crate::settings::download_dir_override().unwrap_or_else(|| self.workspace.join("store"))
     }
 
     pub fn builds(&self) -> PathBuf {

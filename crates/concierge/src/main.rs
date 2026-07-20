@@ -450,6 +450,9 @@ fn unaudited(repo: &Repo, manifest: &Manifest) -> usize {
 
 #[allow(clippy::too_many_lines)]
 fn run() -> Result<()> {
+    // Load persisted settings (download folder, concurrency, bandwidth) so the CLI
+    // honours the same configuration as the GUI.
+    let _ = concierge::settings::load();
     let cli = Cli::parse();
     // `init` runs in an empty dir — before repo discovery / plan eval.
     if let Cmd::Init { game, nix, dir } = &cli.cmd {

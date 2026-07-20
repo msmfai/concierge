@@ -40,21 +40,58 @@ fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// The download loop's link to the outside world: progress reporting plus the
+/// three live controls a download manager needs — cancel, pause, and throttle.
+/// Defaults make a bare progress callback (via [`ProgressFn`]) a valid controller.
+pub trait Control {
+    /// Called after each chunk with `(bytes_done, total_if_known)`.
+    fn on_progress(&self, done: u64, total: Option<u64>);
+    /// Abort the download (returns a `cancelled` error, leaving the `.part`).
+    fn cancelled(&self) -> bool {
+        false
+    }
+    /// Block here while globally/individually paused (returns to resume).
+    fn wait_while_paused(&self) {}
+    /// Rate-limit: called with the size of the chunk just written; an impl that
+    /// throttles sleeps here until the chunk fits the budget.
+    fn throttle(&self, _bytes: usize) {}
+}
+
+/// Adapt a bare `Fn(done, total)` progress closure into a [`Control`] (no cancel,
+/// pause, or throttle) — the shape the pre-manager callers used.
+pub struct ProgressFn<F: Fn(u64, Option<u64>)>(pub F);
+
+impl<F: Fn(u64, Option<u64>)> std::fmt::Debug for ProgressFn<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ProgressFn(..)")
+    }
+}
+
+impl<F: Fn(u64, Option<u64>)> Control for ProgressFn<F> {
+    fn on_progress(&self, done: u64, total: Option<u64>) {
+        (self.0)(done, total);
+    }
+}
+
+/// Error message used when a download is cancelled via [`Control::cancelled`].
+pub const CANCELLED: &str = "download cancelled";
+
 /// Download `url` into `dest`, resuming an interrupted `.part`, retrying transient
-/// failures, and reporting `(bytes_done, total_bytes_if_known)` after each chunk.
-/// On success `dest` exists and the `.part` is gone (atomic rename).
-pub fn fetch_to(url: &str, dest: &Path, on_progress: &dyn Fn(u64, Option<u64>)) -> Result<()> {
+/// failures, reporting progress, and honouring the controller's cancel/pause/
+/// throttle. On success `dest` exists and the `.part` is gone (atomic rename).
+pub fn fetch_to(url: &str, dest: &Path, ctl: &dyn Control) -> Result<()> {
     let part = part_path(dest);
     let mut attempt = 0u32;
     loop {
         attempt += 1;
-        match attempt_fetch(url, &part, on_progress) {
+        match attempt_fetch(url, &part, ctl) {
             Ok(()) => {
                 std::fs::rename(&part, dest).ctx(dest)?;
                 return Ok(());
             }
             Err(e) => {
-                if attempt >= MAX_ATTEMPTS {
+                // A cancel is terminal — never retry it.
+                if e.to_string().contains(CANCELLED) || attempt >= MAX_ATTEMPTS {
                     return Err(e);
                 }
                 concierge_platform::diag(&format!(
@@ -66,7 +103,7 @@ pub fn fetch_to(url: &str, dest: &Path, on_progress: &dyn Fn(u64, Option<u64>)) 
     }
 }
 
-fn attempt_fetch(url: &str, part: &Path, on_progress: &dyn Fn(u64, Option<u64>)) -> Result<()> {
+fn attempt_fetch(url: &str, part: &Path, ctl: &dyn Control) -> Result<()> {
     let existing = std::fs::metadata(part).map_or(0, |m| m.len());
     let mut req = ureq::get(url).set("User-Agent", "concierge-prototype/0.1");
     if existing > 0 {
@@ -89,17 +126,22 @@ fn attempt_fetch(url: &str, part: &Path, on_progress: &dyn Fn(u64, Option<u64>))
     };
     let total = body_len.map(|len| base.saturating_add(len));
     let mut done = base;
-    on_progress(done, total);
+    ctl.on_progress(done, total);
     let mut reader = resp.into_reader();
     let mut buf = [0u8; 8192];
     loop {
+        ctl.wait_while_paused();
+        if ctl.cancelled() {
+            return Err(crate::error::Error::Other(CANCELLED.to_owned()));
+        }
         let n = reader.read(&mut buf).ctx(part)?;
         if n == 0 {
             break;
         }
         file.write_all(buf.get(..n).unwrap_or(&[])).ctx(part)?;
+        ctl.throttle(n);
         done = done.saturating_add(u64::try_from(n).unwrap_or(0));
-        on_progress(done, total);
+        ctl.on_progress(done, total);
     }
     file.flush().ctx(part)?;
     Ok(())
