@@ -157,6 +157,158 @@ pub fn download_dir_override() -> Option<PathBuf> {
     get().download_dir
 }
 
+impl Settings {
+    /// Every setting as `(key, label, value-as-string)` — projected so both views
+    /// SHOW the same settings and an agent can name them to change them.
+    #[must_use]
+    pub fn as_rows(&self) -> Vec<(&'static str, &'static str, String)> {
+        vec![
+            (
+                "download_dir",
+                "Download folder",
+                self.download_dir
+                    .as_ref()
+                    .map_or_else(String::new, |p| p.display().to_string()),
+            ),
+            (
+                "max_parallel_downloads",
+                "Max parallel downloads",
+                self.max_parallel_downloads.to_string(),
+            ),
+            (
+                "max_bandwidth_kib",
+                "Max bandwidth (KiB/s, 0=unlimited)",
+                self.max_bandwidth_kib.to_string(),
+            ),
+            (
+                "download_retries",
+                "Retries on failure",
+                self.download_retries.to_string(),
+            ),
+            (
+                "verify_checksums",
+                "Verify checksums",
+                self.verify_checksums.to_string(),
+            ),
+            (
+                "keep_archives",
+                "Keep archives after install",
+                self.keep_archives.to_string(),
+            ),
+            (
+                "resume_downloads",
+                "Resume interrupted downloads",
+                self.resume_downloads.to_string(),
+            ),
+            (
+                "check_updates_on_startup",
+                "Check for updates on startup",
+                self.check_updates_on_startup.to_string(),
+            ),
+            (
+                "update_channel",
+                "Update channel",
+                if self.update_channel == UpdateChannel::Beta {
+                    "beta"
+                } else {
+                    "stable"
+                }
+                .to_owned(),
+            ),
+            (
+                "open_pages_one_at_a_time",
+                "Open Nexus pages one at a time",
+                self.open_pages_one_at_a_time.to_string(),
+            ),
+            (
+                "confirm_before_uninstall",
+                "Confirm before uninstall",
+                self.confirm_before_uninstall.to_string(),
+            ),
+            (
+                "desktop_notifications",
+                "Desktop notifications",
+                self.desktop_notifications.to_string(),
+            ),
+            (
+                "auto_apply_after_download",
+                "Apply automatically after Download",
+                self.auto_apply_after_download.to_string(),
+            ),
+            (
+                "theme",
+                "Theme",
+                match self.theme {
+                    Theme::Dark => "dark",
+                    Theme::Light => "light",
+                    Theme::System => "system",
+                }
+                .to_owned(),
+            ),
+            ("language", "Language", self.language.clone()),
+            (
+                "show_advanced",
+                "Show advanced options",
+                self.show_advanced.to_string(),
+            ),
+            (
+                "minimize_to_tray",
+                "Minimize to tray on close",
+                self.minimize_to_tray.to_string(),
+            ),
+        ]
+    }
+
+    /// Set a field by its `key` from a string `value` (the `set:<key>=<value>`
+    /// action). Returns whether the key was recognised. Bools accept
+    /// `true`/`false`; a blank `download_dir` clears the override.
+    #[must_use]
+    pub fn set_by_key(&mut self, key: &str, value: &str) -> bool {
+        let b = || value.eq_ignore_ascii_case("true") || value == "1";
+        match key {
+            "download_dir" => {
+                self.download_dir = (!value.trim().is_empty()).then(|| PathBuf::from(value.trim()));
+            }
+            "max_parallel_downloads" => {
+                self.max_parallel_downloads = value.parse().unwrap_or(self.max_parallel_downloads);
+            }
+            "max_bandwidth_kib" => {
+                self.max_bandwidth_kib = value.parse().unwrap_or(self.max_bandwidth_kib);
+            }
+            "download_retries" => {
+                self.download_retries = value.parse().unwrap_or(self.download_retries);
+            }
+            "verify_checksums" => self.verify_checksums = b(),
+            "keep_archives" => self.keep_archives = b(),
+            "resume_downloads" => self.resume_downloads = b(),
+            "check_updates_on_startup" => self.check_updates_on_startup = b(),
+            "update_channel" => {
+                self.update_channel = if value.eq_ignore_ascii_case("beta") {
+                    UpdateChannel::Beta
+                } else {
+                    UpdateChannel::Stable
+                }
+            }
+            "open_pages_one_at_a_time" => self.open_pages_one_at_a_time = b(),
+            "confirm_before_uninstall" => self.confirm_before_uninstall = b(),
+            "desktop_notifications" => self.desktop_notifications = b(),
+            "auto_apply_after_download" => self.auto_apply_after_download = b(),
+            "theme" => {
+                self.theme = match value.to_ascii_lowercase().as_str() {
+                    "dark" => Theme::Dark,
+                    "light" => Theme::Light,
+                    _ => Theme::System,
+                }
+            }
+            "language" => value.clone_into(&mut self.language),
+            "show_advanced" => self.show_advanced = b(),
+            "minimize_to_tray" => self.minimize_to_tray = b(),
+            _ => return false,
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -201,6 +353,24 @@ mod tests {
         assert_eq!(s.max_parallel_downloads, 2);
         assert!(s.verify_checksums); // default
         assert_eq!(s.language, "en"); // default
+    }
+
+    #[test]
+    fn set_by_key_roundtrips_every_row() {
+        let mut s = Settings::default();
+        // Every projected row's key must be settable (no orphan keys).
+        for (key, _, _) in Settings::default().as_rows() {
+            assert!(s.set_by_key(key, "0"), "row key '{key}' not settable");
+        }
+        assert!(s.set_by_key("max_parallel_downloads", "9"));
+        assert_eq!(s.max_parallel_downloads, 9);
+        assert!(s.set_by_key("verify_checksums", "false"));
+        assert!(!s.verify_checksums);
+        assert!(s.set_by_key("theme", "dark"));
+        assert_eq!(s.theme, Theme::Dark);
+        assert!(s.set_by_key("update_channel", "beta"));
+        assert_eq!(s.update_channel, UpdateChannel::Beta);
+        assert!(!s.set_by_key("nonexistent_key", "x"));
     }
 
     #[test]

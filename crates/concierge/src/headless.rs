@@ -262,6 +262,7 @@ impl Headless {
             browse_sorts: Vec::new(),
             needed_pages: Vec::new(),
             addable_games: Vec::new(),
+            settings: Vec::new(),
             diff_open: self.diff_open,
             confirm: self.confirm.as_ref().map(|(k, _)| *k),
             confirm_prompt: self.confirm.as_ref().map(|(_, p)| p.clone()),
