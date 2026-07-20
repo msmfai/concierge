@@ -893,6 +893,19 @@ impl App {
                 .iter()
                 .map(|k| (*k).to_string())
                 .collect(),
+            settings: if self.settings_open {
+                self.settings
+                    .as_rows()
+                    .into_iter()
+                    .map(|(k, l, v)| concierge_ui::SettingRow {
+                        key: k.to_owned(),
+                        label: l.to_owned(),
+                        value: v,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
             diff_open: self.diff_open,
             confirm,
             confirm_prompt: self.confirm.as_ref().map(Confirm::prompt),
@@ -1277,6 +1290,19 @@ impl App {
                 self.browse_sort = concierge_ai::tools::SortBy::from_label(s)
                     .unwrap_or(concierge_ai::tools::SortBy::Endorsements);
                 self.do_browse_search();
+            }
+            // Set a user setting: `set:<key>=<value>` — the shared channel both the
+            // human widgets and the agent use to change settings.
+            _ if id.starts_with("set:") => {
+                let rest = id.trim_start_matches("set:");
+                if let Some((key, value)) = rest.split_once('=') {
+                    if self.settings.set_by_key(key, value) {
+                        let _ = concierge::settings::save(&self.settings);
+                        concierge::store::set_auto_open_browser(
+                            !self.settings.open_pages_one_at_a_time,
+                        );
+                    }
+                }
             }
             "open_browse" => {
                 self.browse_open = true;

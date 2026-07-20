@@ -203,6 +203,7 @@ pub const RAW_ACTION_PREFIXES: &[&str] = &[
     "open_page:",
     "browse_cat:",
     "browse_sort:",
+    "set:",
 ];
 
 /// Fixed action ids that aren't [`Intent`]s (rendered via `raw(...)`): the
@@ -244,6 +245,15 @@ pub struct BrowseHit {
 pub struct VersionRow {
     pub number: u64,
     pub hash: String,
+}
+
+/// One user setting — projected so both views show the same values and an agent
+/// can set it via `set:<key>=<value>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SettingRow {
+    pub key: String,
+    pub label: String,
+    pub value: String,
 }
 
 /// A mod in the guided Download-session that still needs its Nexus page opened —
@@ -358,6 +368,8 @@ pub struct Screen {
     pub tab: Tab,
     pub mods: Vec<ModRow>,
     pub fields: Vec<Field>,
+    /// User settings (present when the Settings window is open).
+    pub settings: Vec<SettingRow>,
     /// The download-manager queue (present when the Downloads window is open).
     pub downloads: Vec<DownloadRow>,
     pub browse_hits: Vec<BrowseHit>,
@@ -420,6 +432,8 @@ pub struct UiFacts {
     pub needed_pages: Vec<NeededPage>,
     /// Game kinds that can be added (the "+ add game" menu) — `add_game:<kind>`.
     pub addable_games: Vec<String>,
+    /// User settings (projected so both views show + set them via `set:<k>=<v>`).
+    pub settings: Vec<SettingRow>,
     pub diff_open: bool,
     pub confirm: Option<ConfirmKind>,
     pub confirm_prompt: Option<String>,
@@ -901,11 +915,22 @@ pub fn transitions(f: &UiFacts, state: UiState) -> Vec<Transition> {
             } else {
                 t(Intent::UpdateCheck, "Check for updates", true, None)
             },
-            to(
-                t(Intent::CloseSettings, "Close settings", true, None),
-                "Editing",
-            ),
-        ],
+        ]
+        .into_iter()
+        .chain(f.settings.iter().map(|s| {
+            // Projected so the agent can set any setting: `set:<key>=<value>`.
+            raw(
+                &format!("set:{}={}", s.key, s.value),
+                format!("{} = {}", s.label, s.value),
+                true,
+                None,
+            )
+        }))
+        .chain(std::iter::once(to(
+            t(Intent::CloseSettings, "Close settings", true, None),
+            "Editing",
+        )))
+        .collect(),
         UiState::Browse => {
             let nxm_ok = f.mutable && f.nxm_input.starts_with("nxm://");
             let nxm_guard = if !f.mutable {
@@ -1136,6 +1161,7 @@ pub fn build_screen(f: &UiFacts) -> Screen {
         tab: f.tab.0,
         mods: f.mods.clone(),
         fields,
+        settings: f.settings.clone(),
         downloads: f.downloads.clone(),
         browse_hits: f.browse_hits.clone(),
         versions: f.versions.clone(),
@@ -1182,6 +1208,12 @@ pub fn render_text(s: &Screen) -> String {
         o.push_str("FIELDS:\n");
         for fld in &s.fields {
             let _ = writeln!(o, "  {} = \"{}\"  ({})", fld.id, fld.value, fld.label);
+        }
+    }
+    if !s.settings.is_empty() {
+        o.push_str("SETTINGS:\n");
+        for st in &s.settings {
+            let _ = writeln!(o, "  {} = {}  (set:{}=<value>)", st.key, st.value, st.key);
         }
     }
     if !s.downloads.is_empty() {
@@ -1528,6 +1560,11 @@ mod tests {
             base.games = vec!["g".into()];
             base.profiles = vec!["p".into()];
             base.addable_games = vec!["skyrimse".into()];
+            base.settings = vec![SettingRow {
+                key: "theme".into(),
+                label: "Theme".into(),
+                value: "system".into(),
+            }];
             base.new_profile = "x".into();
             base.add_open = true;
             base.mods = vec![
