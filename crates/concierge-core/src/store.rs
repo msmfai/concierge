@@ -4,7 +4,7 @@
 //! browser-download inbox (requireFile semantics). TOFU: unpinned archives are
 //! hashed and the pin printed for the user to commit into the manifest.
 
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::path::PathBuf;
 
 use crate::error::{Error, IoCtx, Result};
@@ -24,31 +24,77 @@ pub enum FetchOutcome {
     Blocked { instructions: String },
 }
 
+/// Upper bound on mods fetched at once — the download manager's concurrency
+/// (roadmap 0.3). Keeps a big pack downloading in parallel without hammering the
+/// host or the network.
+const MAX_CONCURRENT_DOWNLOADS: usize = 4;
+
+/// One ordered result slot for the bounded parallel fetch.
+type FetchSlot = std::sync::Mutex<Option<Result<(String, FetchOutcome)>>>;
+
+const fn outcome_tag(outcome: &FetchOutcome) -> &'static str {
+    match outcome {
+        FetchOutcome::Present(_) => "already cached",
+        FetchOutcome::Stored(_) => "downloaded",
+        FetchOutcome::NeedsPin { .. } => "downloaded (needs pin)",
+        FetchOutcome::Blocked { .. } => "blocked (manual download needed)",
+    }
+}
+
 pub fn fetch_all(repo: &Repo, plan: &Plan) -> Result<Vec<(String, FetchOutcome)>> {
     std::fs::create_dir_all(repo.store()).ctx(&repo.store())?;
     // One `whoami` for the whole batch: the premium API download only works for
     // premium accounts (it 403s for free ones), so free users take the
     // click/manual path instead of hard-failing.
     let premium = nexus_premium();
+    let n = plan.mods.len();
+    let concurrency = n.clamp(1, MAX_CONCURRENT_DOWNLOADS);
     concierge_platform::diag(&format!(
-        "fetch_all: {} mod(s), premium={premium}, auto_open_browser={}",
-        plan.mods.len(),
+        "fetch_all: {n} mod(s), premium={premium}, concurrency={concurrency}, auto_open_browser={}",
         auto_open_browser_enabled()
     ));
-    plan.mods
-        .iter()
-        .map(|m| {
-            let outcome = fetch_one(repo, plan.game.nexus_domain.as_deref(), m, premium)?;
-            let tag = match &outcome {
-                FetchOutcome::Present(_) => "already cached",
-                FetchOutcome::Stored(_) => "downloaded",
-                FetchOutcome::NeedsPin { .. } => "downloaded (needs pin)",
-                FetchOutcome::Blocked { .. } => "blocked (manual download needed)",
-            };
-            concierge_platform::diag(&format!("fetch_all: '{}' -> {tag}", m.name));
-            Ok((m.name.clone(), outcome))
-        })
-        .collect()
+    // Bounded parallel fetch: `concurrency` workers pull the next mod index from a
+    // shared counter and drop the result into its ordered slot. Each mod's fetch is
+    // independent (its own `.tmp-`/`.part-` file, its own store write), so this is
+    // safe without per-file locks; order is preserved via the index.
+    let domain = plan.game.nexus_domain.as_deref();
+    let slots: Vec<FetchSlot> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..concurrency {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(m) = plan.mods.get(i) else { break };
+                let result = fetch_one(repo, domain, m, premium).map(|outcome| {
+                    concierge_platform::diag(&format!(
+                        "fetch_all: '{}' -> {}",
+                        m.name,
+                        outcome_tag(&outcome)
+                    ));
+                    (m.name.clone(), outcome)
+                });
+                if let Some(slot) = slots.get(i) {
+                    if let Ok(mut g) = slot.lock() {
+                        *g = Some(result);
+                    }
+                }
+            });
+        }
+    });
+    // Reassemble in manifest order; the first error short-circuits the batch.
+    let mut out = Vec::with_capacity(n);
+    for slot in slots {
+        match slot.into_inner() {
+            Ok(Some(Ok(pair))) => out.push(pair),
+            Ok(Some(Err(e))) => return Err(e),
+            _ => {
+                return Err(Error::Other(
+                    "fetch_all: a download slot was never filled".into(),
+                ))
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// True only if a Nexus API key is set AND the account is premium. No key, a bad
@@ -435,12 +481,17 @@ fn download(repo: &Repo, file: &str, url: &str) -> Result<PathBuf> {
         std::fs::copy(local, &tmp).ctx(&tmp)?;
         return Ok(tmp);
     }
-    let resp = ureq::get(url)
-        .set("User-Agent", "concierge-prototype/0.1")
-        .call()?;
-    let mut out = std::fs::File::create(&tmp).ctx(&tmp)?;
-    std::io::copy(&mut resp.into_reader(), &mut out).ctx(&tmp)?;
-    out.flush().ctx(&tmp)?;
+    // Resumable, retrying download (roadmap 0.3). Progress is logged once per MiB
+    // so a long download shows life without flooding the log.
+    let last_mib = std::cell::Cell::new(u64::MAX);
+    crate::download::fetch_to(url, &tmp, &|done, total| {
+        let mib = done / (1024 * 1024);
+        if mib != last_mib.get() {
+            last_mib.set(mib);
+            let of = total.map_or_else(String::new, |t| format!(" / {} MiB", t / (1024 * 1024)));
+            concierge_platform::diag(&format!("download: {file} {mib} MiB{of}"));
+        }
+    })?;
     Ok(tmp)
 }
 
