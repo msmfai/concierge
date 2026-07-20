@@ -58,6 +58,8 @@ pub enum UiState {
     Settings,
     /// The catalog Browse window is open.
     Browse,
+    /// The background download-manager window is open.
+    Downloads,
     /// The "Preview changes" (diff) window is open.
     PreviewChanges,
     /// An action (Apply/Download/…) is running off-thread.
@@ -79,6 +81,7 @@ impl UiState {
             Self::Confirming(k) => format!("Confirming{k:?}"),
             Self::Settings => "Settings".into(),
             Self::Browse => "Browse".into(),
+            Self::Downloads => "Downloads".into(),
             Self::PreviewChanges => "PreviewChanges".into(),
             Self::Applying => "Applying".into(),
             Self::AiRunning => "AiRunning".into(),
@@ -108,6 +111,11 @@ pub enum Intent {
     CloseSettings,
     OpenBrowse,
     CloseBrowse,
+    OpenDownloads,
+    CloseDownloads,
+    PauseAllDownloads,
+    ResumeAllDownloads,
+    ClearDownloads,
     OpenPreview,
     ClosePreview,
     SelectSetupTab,
@@ -148,6 +156,11 @@ impl Intent {
             Self::CloseSettings => "close_settings",
             Self::OpenBrowse => "open_browse",
             Self::CloseBrowse => "close_browse",
+            Self::OpenDownloads => "open_downloads",
+            Self::CloseDownloads => "close_downloads",
+            Self::PauseAllDownloads => "dl_pause_all",
+            Self::ResumeAllDownloads => "dl_resume_all",
+            Self::ClearDownloads => "dl_clear",
             Self::OpenPreview => "open_preview",
             Self::ClosePreview => "close_preview",
             Self::SelectSetupTab => "tab_setup",
@@ -193,6 +206,20 @@ pub struct BrowseHit {
 pub struct VersionRow {
     pub number: u64,
     pub hash: String,
+}
+
+/// One row in the background download manager — projected so BOTH views see the
+/// same queue. Its controls are `dl_pause:<id>` / `dl_resume:<id>` / `dl_cancel:<id>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DownloadRow {
+    pub id: u64,
+    pub name: String,
+    /// Lower-case lifecycle: `downloading` | `paused` | `done` | `cancelled` |
+    /// `failed`. The GUI colours it; the text view prints it verbatim.
+    pub state: String,
+    pub done: u64,
+    pub total: Option<u64>,
+    pub bytes_per_sec: u64,
 }
 
 /// The ids the egui GUI renders as the main action-bar row (as opposed to
@@ -284,6 +311,8 @@ pub struct Screen {
     pub tab: Tab,
     pub mods: Vec<ModRow>,
     pub fields: Vec<Field>,
+    /// The download-manager queue (present when the Downloads window is open).
+    pub downloads: Vec<DownloadRow>,
     pub browse_hits: Vec<BrowseHit>,
     pub versions: Vec<VersionRow>,
     pub saves: Vec<String>,
@@ -325,6 +354,12 @@ pub struct UiFacts {
     pub ai_busy: bool,
     pub settings_open: bool,
     pub browse_open: bool,
+    /// The background download-manager window is open.
+    pub downloads_open: bool,
+    /// The manager's global pause is engaged.
+    pub downloads_paused_all: bool,
+    /// The live download queue (projected so both views show/drive it).
+    pub downloads: Vec<DownloadRow>,
     pub diff_open: bool,
     pub confirm: Option<ConfirmKind>,
     pub confirm_prompt: Option<String>,
@@ -387,6 +422,9 @@ pub const fn ui_state(f: &UiFacts) -> UiState {
     }
     if f.browse_open {
         return UiState::Browse;
+    }
+    if f.downloads_open {
+        return UiState::Downloads;
     }
     if f.diff_open {
         return UiState::PreviewChanges;
@@ -643,6 +681,13 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         t(Intent::OpenPreview, "Preview", true, None),
         "PreviewChanges",
     ));
+    v.push(to(
+        hv(
+            t(Intent::OpenDownloads, "\u{2b07} Downloads", true, None),
+            "the background download manager (queue, speeds, pause/cancel)",
+        ),
+        "Downloads",
+    ));
     if f.has_catalog {
         v.push(to(
             hv(
@@ -667,6 +712,7 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
 
 /// The legal transitions from a state — the automaton's edges.
 #[must_use]
+#[allow(clippy::too_many_lines)] // a flat per-state transition table
 pub fn transitions(f: &UiFacts, state: UiState) -> Vec<Transition> {
     match state {
         UiState::NoWorkspace => Vec::new(),
@@ -723,6 +769,56 @@ pub fn transitions(f: &UiFacts, state: UiState) -> Vec<Transition> {
             }
             v.push(to(
                 t(Intent::CloseBrowse, "Close browse", true, None),
+                "Editing",
+            ));
+            v
+        }
+        // The background download manager: global controls + a per-row
+        // pause/resume/cancel projected for every job, so the agent can drive the
+        // queue exactly as a human does.
+        UiState::Downloads => {
+            let mut v = Vec::new();
+            if f.downloads_paused_all {
+                v.push(t(Intent::ResumeAllDownloads, "Resume all", true, None));
+            } else {
+                v.push(t(Intent::PauseAllDownloads, "Pause all", true, None));
+            }
+            v.push(t(Intent::ClearDownloads, "Clear finished", true, None));
+            for d in &f.downloads {
+                match d.state.as_str() {
+                    "downloading" => {
+                        v.push(raw(
+                            &format!("dl_pause:{}", d.id),
+                            format!("pause {}", d.name),
+                            true,
+                            None,
+                        ));
+                        v.push(raw(
+                            &format!("dl_cancel:{}", d.id),
+                            format!("cancel {}", d.name),
+                            true,
+                            None,
+                        ));
+                    }
+                    "paused" => {
+                        v.push(raw(
+                            &format!("dl_resume:{}", d.id),
+                            format!("resume {}", d.name),
+                            true,
+                            None,
+                        ));
+                        v.push(raw(
+                            &format!("dl_cancel:{}", d.id),
+                            format!("cancel {}", d.name),
+                            true,
+                            None,
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            v.push(to(
+                t(Intent::CloseDownloads, "Close downloads", true, None),
                 "Editing",
             ));
             v
@@ -842,6 +938,7 @@ pub fn build_screen(f: &UiFacts) -> Screen {
         tab: f.tab.0,
         mods: f.mods.clone(),
         fields,
+        downloads: f.downloads.clone(),
         browse_hits: f.browse_hits.clone(),
         versions: f.versions.clone(),
         saves: f.saves.clone(),
@@ -887,6 +984,17 @@ pub fn render_text(s: &Screen) -> String {
         o.push_str("FIELDS:\n");
         for fld in &s.fields {
             let _ = writeln!(o, "  {} = \"{}\"  ({})", fld.id, fld.value, fld.label);
+        }
+    }
+    if !s.downloads.is_empty() {
+        o.push_str("DOWNLOADS:\n");
+        for d in &s.downloads {
+            let total = d.total.map_or_else(|| "?".to_owned(), |t| t.to_string());
+            let _ = writeln!(
+                o,
+                "  #{} [{}] {} — {}/{} bytes @ {}/s",
+                d.id, d.state, d.name, d.done, total, d.bytes_per_sec
+            );
         }
     }
     for p in &s.panels {
@@ -1123,5 +1231,62 @@ mod tests {
     fn build_screen_is_a_pure_function_of_facts() {
         let f = base_facts();
         assert_eq!(build_screen(&f), build_screen(&f));
+    }
+
+    // Drift guard for the download manager: the whole surface (open, the global
+    // controls, per-job controls, the observable queue) must be in the view-model,
+    // so the headless/agent view drives exactly what the GUI does.
+    #[test]
+    fn download_manager_is_fully_projected_and_drivable() {
+        let mut f = base_facts();
+        // Entry point exists from the base state.
+        assert!(build_screen(&f)
+            .transitions
+            .iter()
+            .any(|t| t.id == "open_downloads"));
+        // Open it → Downloads state with a live queue.
+        f.downloads_open = true;
+        f.downloads = vec![DownloadRow {
+            id: 7,
+            name: "SkyUI".into(),
+            state: "downloading".into(),
+            done: 50,
+            total: Some(100),
+            bytes_per_sec: 2048,
+        }];
+        let s = build_screen(&f);
+        assert_eq!(s.state, UiState::Downloads);
+        let ids: std::collections::BTreeSet<&str> =
+            s.transitions.iter().map(|t| t.id.as_str()).collect();
+        for id in [
+            "dl_pause_all",
+            "dl_clear",
+            "dl_pause:7",
+            "dl_cancel:7",
+            "close_downloads",
+        ] {
+            assert!(ids.contains(id), "download control '{id}' not projected");
+        }
+        // The queue is observable in the text (agent) view.
+        let txt = render_text(&s);
+        assert!(
+            txt.contains("DOWNLOADS:") && txt.contains("SkyUI"),
+            "queue not in text view"
+        );
+        // Global pause flips pause-all → resume-all; a paused job offers resume.
+        f.downloads_paused_all = true;
+        f.downloads = vec![DownloadRow {
+            id: 7,
+            name: "SkyUI".into(),
+            state: "paused".into(),
+            done: 50,
+            total: Some(100),
+            bytes_per_sec: 0,
+        }];
+        let s2 = build_screen(&f);
+        let ids2: std::collections::BTreeSet<&str> =
+            s2.transitions.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids2.contains("dl_resume_all"));
+        assert!(ids2.contains("dl_resume:7"));
     }
 }
