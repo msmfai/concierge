@@ -1,0 +1,18 @@
+[package]
+name = "concierge-update"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge — in-app auto-updater: check GitHub Releases, download+verify, swap-and-relaunch."
+
+[dependencies]
+concierge-platform = { path = "../concierge-platform" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+sha2 = "0.10"
+hex = "0.4"
+ureq = { version = "2", features = ["json"] }
+
+[lints]
+workspace = true

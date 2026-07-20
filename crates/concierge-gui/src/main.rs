@@ -16,6 +16,7 @@
 
 mod diag;
 mod terminal;
+mod updates;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -211,6 +212,8 @@ fn main() -> eframe::Result {
     // place — e.g. a browser open from the fetch path is captured, not just the
     // ones the GUI triggers directly.
     concierge_platform::set_diag_logger(diag::log);
+    // Sweep any binary a previous auto-update swapped aside (roadmap 0.2).
+    updates::Updates::startup_cleanup();
     // Wire every family/leaf adapter crate into core's resolver at startup.
     concierge_games::register();
     // The GUI never blasts a browser tab per uncached mod on Download — it drives
@@ -479,6 +482,8 @@ struct App {
     /// up + applied; re-openable from the top bar).
     quickstart_open: bool,
     settings_open: bool,
+    /// In-app auto-updater state (roadmap 0.2).
+    updates: updates::Updates,
     diff_open: bool,
     /// The enriched Preview text, computed once when the window opens (the
     /// per-file conflict scan touches disk, so it must stay off the render path).
@@ -617,6 +622,7 @@ impl App {
             undo: Vec::new(),
             quickstart_open: true,
             settings_open: false,
+            updates: updates::Updates::default(),
             diff_open: false,
             preview_lines: Vec::new(),
             browse_open: false,
@@ -4046,6 +4052,8 @@ impl App {
                         Err(e) => self.error = Some(format!("couldn't find the app path: {e}")),
                     }
                 }
+                ui.separator();
+                self.updates.render(ui);
                 ui.separator();
                 ui.strong("Game install folder");
                 // Owned snapshot so the manifest borrow is released before the
