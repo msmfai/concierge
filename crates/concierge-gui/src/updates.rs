@@ -78,6 +78,20 @@ impl Updates {
         });
     }
 
+    /// Install the currently-available update, if one was found (dispatched by the
+    /// projected `update_install` action).
+    pub fn install_available(&self) {
+        if let Status::Available(tag) = read(&self.status) {
+            self.install(tag);
+        }
+    }
+
+    /// Whether a newer release is available (projected into `UiFacts`).
+    #[must_use]
+    pub fn update_available(&self) -> bool {
+        matches!(read(&self.status), Status::Available(_))
+    }
+
     /// Download the verified asset for `tag`, swap it in, and relaunch. On success
     /// this process exits from inside the worker; on failure the status reflects it.
     fn install(&self, tag: String) {
@@ -101,8 +115,10 @@ impl Updates {
         }
     }
 
-    /// Render the Updates section of Settings.
-    pub fn render(&mut self, ui: &mut eframe::egui::Ui) {
+    /// Render the Updates section of Settings. Button clicks are collected into
+    /// `clicks` as view-model action ids (`update_check` / `update_install`) and
+    /// dispatched by the caller — so the agent view drives the updater too.
+    pub fn render(&mut self, ui: &mut eframe::egui::Ui, clicks: &mut Vec<String>) {
         use eframe::egui;
         // Auto-check once, the first time Settings is drawn this session.
         if !self.started {
@@ -133,7 +149,7 @@ impl Updates {
                     );
                 }
                 if ui.button("Check for updates").clicked() {
-                    self.check();
+                    clicks.push("update_check".to_owned());
                 }
             }
             Status::Checking => {
@@ -152,7 +168,8 @@ impl Updates {
                     .on_hover_text("downloads the verified build and relaunches into it")
                     .clicked()
                 {
-                    self.install(tag);
+                    let _ = tag;
+                    clicks.push("update_install".to_owned());
                 }
             }
             Status::Working(msg) => {
@@ -165,7 +182,7 @@ impl Updates {
             Status::Failed(e) => {
                 ui.colored_label(egui::Color32::from_rgb(220, 120, 120), e);
                 if ui.button("Retry").clicked() {
-                    self.check();
+                    clicks.push("update_check".to_owned());
                 }
             }
         }
