@@ -19,4 +19,11 @@ PANEL settings — Settings:
 STATE: Settings
 TRANSITIONS:
   check_account    Check account            [enabled]
+  nexus_get_key    Get my API key           [enabled]
+  nexus_save_key   Save & sign in           [enabled]
+  enable_1click    Enable 1-click downloads [enabled]
+  detect_steam     Detect via Steam         [enabled]
+  set_install_folder Set install folder       [enabled]
+  save_compat      Save compatibility       [enabled]
+  update_check     Check for updates        [enabled]
   close_settings   Close settings           [enabled]  -> Editing

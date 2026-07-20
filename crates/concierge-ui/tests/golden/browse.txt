@@ -19,6 +19,9 @@ STATE: Browse
 TRANSITIONS:
   browse_search    search                   [enabled]
   nxm_add          add nxm                  [guarded: paste an nxm:// link]
+  browse_clear     clear filters            [enabled]
+  sync_catalog     sync catalog             [enabled]
+  browse_cat:      category: all            [enabled]
   add_hit:12604    ✓ added: SkyUI by SkyUI Team [guarded: already in the manifest]
   add_hit:3863     + add SkySight Skins by fadingsignal (▲12000, Models and Textures) [enabled]
   close_browse     Close browse             [enabled]  -> Editing

@@ -75,6 +75,12 @@ impl SortBy {
             Self::Name => "name COLLATE NOCASE ASC",
         }
     }
+    /// Map a [`label`](Self::label) back to its variant (for projected sort ids).
+    #[must_use]
+    pub fn from_label(s: &str) -> Option<Self> {
+        Self::all().into_iter().find(|o| o.label() == s)
+    }
+
     /// Human label for the sort control.
     #[must_use]
     pub const fn label(self) -> &'static str {

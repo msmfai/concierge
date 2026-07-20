@@ -154,6 +154,28 @@ intents! {
     CreateEmpty => "create_empty",
     CreateClone => "create_clone",
     NewModpackAi => "new_modpack_ai",
+    // chrome / panels (migrated from hand-rendered controls so the agent view
+    // drives them too)
+    LogClear => "log_clear",
+    OpenQuickstart => "open_quickstart",
+    ToggleQuickstart => "toggle_quickstart",
+    ToggleTheme => "toggle_theme",
+    ToggleAi => "toggle_ai",
+    OpenDownloadSession => "open_download_session",
+    OpenShell => "open_shell",
+    AgentStop => "agent_stop",
+    AgentClose => "agent_close",
+    SyncCatalog => "sync_catalog",
+    BrowseClear => "browse_clear",
+    // Settings actions
+    DetectSteam => "detect_steam",
+    SetInstallFolder => "set_install_folder",
+    SaveCompat => "save_compat",
+    Enable1Click => "enable_1click",
+    NexusGetKey => "nexus_get_key",
+    NexusSaveKey => "nexus_save_key",
+    UpdateCheck => "update_check",
+    UpdateInstall => "update_install",
 }
 
 /// The parameterised `<prefix>:<arg>` action ids (raw transitions the GUI builds
@@ -178,7 +200,9 @@ pub const RAW_ACTION_PREFIXES: &[&str] = &[
     "dl_pause:",
     "dl_resume:",
     "dl_cancel:",
-    "nxm:",
+    "open_page:",
+    "browse_cat:",
+    "browse_sort:",
 ];
 
 /// Fixed action ids that aren't [`Intent`]s (rendered via `raw(...)`): the
@@ -220,6 +244,15 @@ pub struct BrowseHit {
 pub struct VersionRow {
     pub number: u64,
     pub hash: String,
+}
+
+/// A mod in the guided Download-session that still needs its Nexus page opened —
+/// projected so the agent can drive `open_page:<mod_id>:<file_id>` too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NeededPage {
+    pub mod_id: u64,
+    pub file_id: u64,
+    pub name: String,
 }
 
 /// One row in the background download manager — projected so BOTH views see the
@@ -374,6 +407,19 @@ pub struct UiFacts {
     pub downloads_paused_all: bool,
     /// The live download queue (projected so both views show/drive it).
     pub downloads: Vec<DownloadRow>,
+    /// The embedded agent terminal is active / present (gates stop/close).
+    pub agent_running: bool,
+    pub agent_present: bool,
+    /// The updater found a newer release (gates install vs check).
+    pub update_available: bool,
+    /// Browse-window filter options (projected so the agent can pick them):
+    /// category names and sort-order labels.
+    pub browse_categories: Vec<String>,
+    pub browse_sorts: Vec<String>,
+    /// Mods in the guided Download-session still needing a Nexus page opened.
+    pub needed_pages: Vec<NeededPage>,
+    /// Game kinds that can be added (the "+ add game" menu) — `add_game:<kind>`.
+    pub addable_games: Vec<String>,
     pub diff_open: bool,
     pub confirm: Option<ConfirmKind>,
     pub confirm_prompt: Option<String>,
@@ -711,6 +757,109 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
             "Browse",
         ));
     }
+    // Chrome + panel actions (projected so the agent view drives them too).
+    v.push(t(Intent::ToggleTheme, "toggle theme", true, None));
+    v.push(t(Intent::ToggleAi, "toggle AI panel", true, None));
+    v.push(t(Intent::ToggleQuickstart, "quick start", true, None));
+    v.push(t(
+        Intent::OpenQuickstart,
+        "open quick-start guide",
+        true,
+        None,
+    ));
+    v.push(t(Intent::LogClear, "clear log", true, None));
+    v.push(t(
+        Intent::OpenDownloadSession,
+        "download session",
+        true,
+        None,
+    ));
+    // Top-bar identity selectors (which game/profile am I on) + add-game menu.
+    for (i, g) in f.games.iter().enumerate() {
+        v.push(raw(
+            &format!("select_game:{i}"),
+            format!("game: {g}"),
+            true,
+            None,
+        ));
+    }
+    for (i, p) in f.profiles.iter().enumerate() {
+        v.push(raw(
+            &format!("select_profile:{i}"),
+            format!("profile: {p}"),
+            true,
+            None,
+        ));
+    }
+    for k in &f.addable_games {
+        v.push(raw(
+            &format!("add_game:{k}"),
+            format!("add game: {k}"),
+            true,
+            None,
+        ));
+    }
+    for p in &f.needed_pages {
+        v.push(raw(
+            &format!("open_page:{}:{}", p.mod_id, p.file_id),
+            format!("open Nexus page: {}", p.name),
+            true,
+            None,
+        ));
+    }
+    // Per-mod row actions (Setup tab) — projected so the agent reorders/toggles
+    // mods exactly as a human clicks the row buttons. Edits require Edit mode.
+    if matches!(f.tab.0, Tab::Setup) {
+        let edit_guard = (!f.mutable).then_some(LOCKED);
+        for (i, m) in f.mods.iter().enumerate() {
+            v.push(raw(
+                &format!("mod_select:{}", m.name),
+                format!("select {}", m.name),
+                true,
+                None,
+            ));
+            v.push(raw(
+                &format!("mod_toggle:{}", m.name),
+                format!("toggle {}", m.name),
+                f.mutable,
+                edit_guard,
+            ));
+            v.push(raw(
+                &format!("mod_up:{}", m.name),
+                format!("move {} up", m.name),
+                f.mutable,
+                edit_guard,
+            ));
+            v.push(raw(
+                &format!("mod_down:{}", m.name),
+                format!("move {} down", m.name),
+                f.mutable,
+                edit_guard,
+            ));
+            v.push(raw(
+                &format!("mod_remove:{}", m.name),
+                format!("remove {}", m.name),
+                f.mutable,
+                edit_guard,
+            ));
+            if i > 0 {
+                v.push(raw(
+                    &format!("mod_move:{i}:0"),
+                    format!("move {} to top", m.name),
+                    f.mutable,
+                    edit_guard,
+                ));
+            }
+        }
+    }
+    // Embedded agent terminal.
+    if f.agent_running {
+        v.push(t(Intent::AgentStop, "stop agent", true, None));
+    } else if f.agent_present {
+        v.push(t(Intent::AgentClose, "close agent terminal", true, None));
+    } else {
+        v.push(t(Intent::OpenShell, "open sandboxed shell", true, None));
+    }
     // the two central Tabs — selection follows the active tab.
     let setup = matches!(f.tab.0, Tab::Setup);
     v.push(hv(
@@ -736,6 +885,22 @@ pub fn transitions(f: &UiFacts, state: UiState) -> Vec<Transition> {
         ],
         UiState::Settings => vec![
             t(Intent::CheckAccount, "Check account", true, None),
+            t(Intent::NexusGetKey, "Get my API key", true, None),
+            t(Intent::NexusSaveKey, "Save & sign in", true, None),
+            t(Intent::Enable1Click, "Enable 1-click downloads", true, None),
+            t(Intent::DetectSteam, "Detect via Steam", true, None),
+            t(Intent::SetInstallFolder, "Set install folder", true, None),
+            t(Intent::SaveCompat, "Save compatibility", true, None),
+            if f.update_available {
+                t(
+                    Intent::UpdateInstall,
+                    "Download & install update",
+                    true,
+                    None,
+                )
+            } else {
+                t(Intent::UpdateCheck, "Check for updates", true, None)
+            },
             to(
                 t(Intent::CloseSettings, "Close settings", true, None),
                 "Editing",
@@ -753,7 +918,26 @@ pub fn transitions(f: &UiFacts, state: UiState) -> Vec<Transition> {
             let mut v = vec![
                 t(Intent::BrowseSearch, "search", true, None),
                 t(Intent::NxmAdd, "add nxm", nxm_ok, nxm_guard),
+                t(Intent::BrowseClear, "clear filters", true, None),
+                t(Intent::SyncCatalog, "sync catalog", true, None),
             ];
+            v.push(raw("browse_cat:", "category: all", true, None));
+            for c in &f.browse_categories {
+                v.push(raw(
+                    &format!("browse_cat:{c}"),
+                    format!("category: {c}"),
+                    true,
+                    None,
+                ));
+            }
+            for s in &f.browse_sorts {
+                v.push(raw(
+                    &format!("browse_sort:{s}"),
+                    format!("sort: {s}"),
+                    true,
+                    None,
+                ));
+            }
             for h in &f.browse_hits {
                 let by = if h.author.is_empty() {
                     String::new()
@@ -1293,6 +1477,143 @@ mod tests {
                     tr.id
                 );
             }
+        }
+    }
+
+    // The REVERSE contract: every action in the vocabulary is projected as a
+    // transition in SOME reachable state — so the GUI can never dispatch an
+    // action the agent view has no way to reach. Together with the forward
+    // contract, the two views' action sets are provably equal.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn every_vocabulary_action_is_projected_somewhere() {
+        // A rich facts set that lights up every window/mode + dynamic row.
+        let mut all_ids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let states: Vec<UiFacts> = {
+            let mut base = base_facts();
+            base.has_catalog = true;
+            base.browse_categories = vec!["Gameplay".into()];
+            base.browse_sorts = vec!["downloads".into()];
+            base.browse_hits = vec![BrowseHit {
+                mod_id: 9,
+                name: "SkyUI".into(),
+                endorsements: 1,
+                author: "a".into(),
+                summary: String::new(),
+                category: String::new(),
+                downloads: 0,
+                updated_at: String::new(),
+                added: false,
+            }];
+            base.downloads = vec![DownloadRow {
+                id: 1,
+                name: "m".into(),
+                state: "downloading".into(),
+                done: 0,
+                total: None,
+                bytes_per_sec: 0,
+            }];
+            base.needed_pages = vec![NeededPage {
+                mod_id: 1,
+                file_id: 2,
+                name: "n".into(),
+            }];
+            base.versions = vec![VersionRow {
+                number: 1,
+                hash: "h".into(),
+            }];
+            base.saves = vec!["s".into()];
+            base.has_undo = true;
+            base.ai_quick = vec!["fix".into()];
+            base.games = vec!["g".into()];
+            base.profiles = vec!["p".into()];
+            base.addable_games = vec!["skyrimse".into()];
+            base.new_profile = "x".into();
+            base.add_open = true;
+            base.mods = vec![
+                ModRow {
+                    order: 1,
+                    name: "A".into(),
+                    enabled: true,
+                },
+                ModRow {
+                    order: 2,
+                    name: "B".into(),
+                    enabled: true,
+                },
+            ];
+            let mut v = Vec::new();
+            for open in [
+                None,
+                Some("settings"),
+                Some("browse"),
+                Some("downloads"),
+                Some("confirm"),
+                Some("preview"),
+                Some("agent_running"),
+                Some("agent_present"),
+                Some("update"),
+                Some("paused_dl"),
+                Some("ai_busy"),
+            ] {
+                let mut f = base.clone();
+                match open {
+                    Some("ai_busy") => f.ai_busy = true,
+                    Some("settings") => f.settings_open = true,
+                    Some("browse") => f.browse_open = true,
+                    Some("downloads") => f.downloads_open = true,
+                    Some("confirm") => f.confirm = Some(ConfirmKind::Uninstall),
+                    Some("preview") => f.diff_open = true,
+                    Some("agent_running") => f.agent_running = true,
+                    Some("agent_present") => f.agent_present = true,
+                    Some("update") => {
+                        f.settings_open = true;
+                        f.update_available = true;
+                    }
+                    Some("paused_dl") => {
+                        f.downloads_open = true;
+                        f.downloads_paused_all = true;
+                        f.downloads = vec![DownloadRow {
+                            id: 1,
+                            name: "m".into(),
+                            state: "paused".into(),
+                            done: 0,
+                            total: None,
+                            bytes_per_sec: 0,
+                        }];
+                    }
+                    _ => {}
+                }
+                v.push(f);
+            }
+            v
+        };
+        for f in &states {
+            for tr in build_screen(f).transitions {
+                all_ids.insert(tr.id);
+            }
+        }
+        // Every fixed Intent must appear.
+        for i in Intent::ALL {
+            let want = i.id();
+            let hit = all_ids.contains(want) || all_ids.iter().any(|got| got == want);
+            assert!(
+                hit,
+                "Intent '{want}' is in the vocabulary but never projected"
+            );
+        }
+        // Every raw prefix must appear on at least one projected id.
+        for pre in RAW_ACTION_PREFIXES {
+            assert!(
+                all_ids.iter().any(|id| id.starts_with(pre)),
+                "raw action prefix '{pre}' is never projected"
+            );
+        }
+        for id in FIXED_RAW_IDS {
+            assert!(
+                all_ids.contains(*id),
+                "fixed raw id '{id}' is never projected"
+            );
         }
     }
 

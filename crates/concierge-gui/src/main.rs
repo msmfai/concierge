@@ -858,6 +858,41 @@ impl App {
                     bytes_per_sec: j.bytes_per_sec,
                 })
                 .collect(),
+            agent_running: self.term.as_ref().is_some_and(|t| !t.finished()),
+            agent_present: self.term.is_some(),
+            update_available: self.updates.update_available(),
+            browse_categories: self
+                .browse_categories
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect(),
+            browse_sorts: concierge_ai::tools::SortBy::all()
+                .iter()
+                .map(|s| s.label().to_owned())
+                .collect(),
+            needed_pages: if self.download_session_open {
+                self.plan.as_ref().map_or_else(Vec::new, |p| {
+                    p.mods
+                        .iter()
+                        .filter_map(|m| match &m.source {
+                            concierge::plan::Source::Nexus { mod_id, file_id } => {
+                                Some(concierge_ui::NeededPage {
+                                    mod_id: *mod_id,
+                                    file_id: *file_id,
+                                    name: m.name.clone(),
+                                })
+                            }
+                            _ => None,
+                        })
+                        .collect()
+                })
+            } else {
+                Vec::new()
+            },
+            addable_games: concierge_games::kinds()
+                .iter()
+                .map(|k| (*k).to_string())
+                .collect(),
             diff_open: self.diff_open,
             confirm,
             confirm_prompt: self.confirm.as_ref().map(Confirm::prompt),
@@ -1171,6 +1206,78 @@ impl App {
             "open_settings" => self.settings_open = true,
             "close_settings" => self.settings_open = false,
             "check_account" => self.check_account(),
+            // chrome / panels — projected so the agent view drives them too
+            "log_clear" => self.log.clear(),
+            "open_quickstart" => self.quickstart_open = true,
+            "toggle_quickstart" => self.quickstart_open = !self.quickstart_open,
+            "toggle_theme" => {
+                self.dark = !self.dark;
+                self.settings.theme = if self.dark {
+                    concierge::settings::Theme::Dark
+                } else {
+                    concierge::settings::Theme::Light
+                };
+                let _ = concierge::settings::save(&self.settings);
+            }
+            "toggle_ai" => self.ai_visible = !self.ai_visible,
+            "open_download_session" => self.download_session_open = true,
+            "open_shell" => self.start_agent_terminal(),
+            "agent_stop" => {
+                if let Some(t) = &self.term {
+                    t.kill();
+                }
+            }
+            "agent_close" => self.term = None,
+            "browse_clear" => {
+                self.browse_category = None;
+                self.browse_sort = concierge_ai::tools::SortBy::Endorsements;
+                self.do_browse_search();
+            }
+            "sync_catalog" => self.sync_active_catalog(),
+            // Settings actions
+            "detect_steam" => self.detect_steam_install(),
+            "set_install_folder" => {
+                let p = self.pristine_input.trim().to_owned();
+                if !p.is_empty() {
+                    self.pristine_input.clear();
+                    self.set_install_folder(p);
+                }
+            }
+            "save_compat" => self.save_compat(),
+            "enable_1click" => self.enable_1click(),
+            "nexus_get_key" => {
+                let _ = concierge_platform::open_url(NEXUS_API_ACCESS_URL);
+            }
+            "nexus_save_key" => self.save_nexus_key(),
+            "update_check" => self.updates.check(),
+            "update_install" => self.updates.install_available(),
+            _ if id.starts_with("open_page:") => {
+                let rest = id.trim_start_matches("open_page:");
+                if let Some((m, fi)) = rest.split_once(':') {
+                    if let (Ok(mod_id), Ok(file_id)) = (m.parse::<u64>(), fi.parse::<u64>()) {
+                        if let Some(d) =
+                            self.plan.as_ref().and_then(|p| p.game.nexus_domain.clone())
+                        {
+                            let page = concierge::nexus::file_page_url(&d, mod_id, file_id);
+                            diag::log(&format!(
+                                "browser: open Nexus page (mod {mod_id} file {file_id})"
+                            ));
+                            let _ = concierge_platform::open_url(&page);
+                        }
+                    }
+                }
+            }
+            _ if id.starts_with("browse_cat:") => {
+                let c = id.trim_start_matches("browse_cat:");
+                self.browse_category = (!c.is_empty()).then(|| c.to_owned());
+                self.do_browse_search();
+            }
+            _ if id.starts_with("browse_sort:") => {
+                let s = id.trim_start_matches("browse_sort:");
+                self.browse_sort = concierge_ai::tools::SortBy::from_label(s)
+                    .unwrap_or(concierge_ai::tools::SortBy::Endorsements);
+                self.do_browse_search();
+            }
             "open_browse" => {
                 self.browse_open = true;
                 // Open pre-populated: everything, most-endorsed first.
@@ -2661,7 +2768,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.strong("log");
                     if ui.small_button("clear").clicked() {
-                        self.log.clear();
+                        self.dispatch_intent("log_clear");
                     }
                 });
                 egui::ScrollArea::vertical()
@@ -2733,7 +2840,7 @@ impl App {
                 }
                 ui.add_space(6.0);
                 if ui.button("Open the quick-start guide").clicked() {
-                    self.quickstart_open = true;
+                    self.dispatch_intent("open_quickstart");
                 }
                 return;
             };
@@ -2758,18 +2865,14 @@ impl App {
                     );
                     ui.horizontal(|ui| {
                         if ui.button("Detect via Steam").clicked() {
-                            self.detect_steam_install();
+                            self.dispatch_intent("detect_steam");
                         }
                         ui.add(
                             egui::TextEdit::singleline(&mut self.pristine_input)
                                 .hint_text("…or paste the install folder"),
                         );
                         if ui.button("Set folder").clicked() {
-                            let p = self.pristine_input.trim().to_owned();
-                            if !p.is_empty() {
-                                self.pristine_input.clear();
-                                self.set_install_folder(p);
-                            }
+                            self.dispatch_intent("set_install_folder");
                         }
                     });
                 });
@@ -2917,7 +3020,7 @@ impl App {
                                 )
                                 .clicked()
                             {
-                                self.download_session_open = true;
+                                self.dispatch_intent("open_download_session");
                             }
                         });
                     }
@@ -2957,7 +3060,7 @@ impl App {
                                 )
                                 .clicked()
                             {
-                                self.add.open = true;
+                                self.dispatch_intent("add_open");
                             }
                             if let Some(t) = tool {
                                 ui.hyperlink_to(format!("get {name}"), t.home);
@@ -3315,7 +3418,7 @@ impl App {
                         .on_hover_text("show the first-run guide")
                         .clicked()
                     {
-                        self.quickstart_open = !self.quickstart_open;
+                        self.dispatch_intent("toggle_quickstart");
                     }
                     if ui
                         .selectable_label(self.downloads_window_open, "\u{2b07} Downloads")
@@ -3334,22 +3437,14 @@ impl App {
                         .on_hover_text("toggle theme")
                         .clicked()
                     {
-                        self.dark = !self.dark;
-                        // Persist so the choice sticks (and isn't overwritten by the
-                        // settings-driven theme each frame).
-                        self.settings.theme = if self.dark {
-                            concierge::settings::Theme::Dark
-                        } else {
-                            concierge::settings::Theme::Light
-                        };
-                        let _ = concierge::settings::save(&self.settings);
+                        self.dispatch_intent("toggle_theme");
                     }
                     if ui
                         .selectable_label(ai_visible, "AI")
                         .on_hover_text("show/hide the AI assistant column")
                         .clicked()
                     {
-                        self.ai_visible = !self.ai_visible;
+                        self.dispatch_intent("toggle_ai");
                     }
                     if let Some(tr) = &undo_tr {
                         self.transition_button(ui, tr);
@@ -3390,6 +3485,70 @@ impl App {
     /// Point the profile at its game install AND detect which base/DLC masters
     /// that install actually has — so the load order carries only DLC the player
     /// owns, instead of the adapter's assume-every-DLC default.
+    /// Save the pasted Nexus API key and validate it (the `nexus_save_key` action).
+    fn save_nexus_key(&mut self) {
+        let k = self.nexus_key_input.trim().to_owned();
+        if k.is_empty() {
+            return;
+        }
+        let dir = concierge_platform::config_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        match std::fs::write(dir.join("nexus-api-key"), &k) {
+            Ok(()) => {
+                self.nexus_key_input.clear();
+                self.check_account();
+            }
+            Err(e) => self.error = Some(format!("couldn't save key: {e}")),
+        }
+    }
+
+    /// Register the nxm:// protocol handler (the `enable_1click` action).
+    fn enable_1click(&mut self) {
+        match std::env::current_exe() {
+            Ok(exe) => match concierge_platform::register_nxm_handler(&exe) {
+                Ok(msg) => self.notice = Some(msg),
+                Err(e) => self.error = Some(e),
+            },
+            Err(e) => self.error = Some(format!("couldn't find the app path: {e}")),
+        }
+    }
+
+    /// Save the Minecraft version + loader compat (the `save_compat` action).
+    fn save_compat(&mut self) {
+        let (cur_gv, cur_loader) = self.manifest.as_ref().map_or_else(
+            || (String::new(), String::new()),
+            |m| {
+                (
+                    m.compat.game_version.clone().unwrap_or_default(),
+                    m.compat.loader.clone().unwrap_or_default(),
+                )
+            },
+        );
+        let gv = if self.mc_version_input.trim().is_empty() {
+            cur_gv
+        } else {
+            self.mc_version_input.trim().to_owned()
+        };
+        let loader = if self.mc_loader_input.trim().is_empty() {
+            cur_loader
+        } else {
+            self.mc_loader_input.trim().to_owned()
+        };
+        self.apply(Edit::SetCompat(gv, loader));
+        self.notice = Some("Minecraft version + loader saved.".to_owned());
+    }
+
+    /// Sync the active game's catalog (the `sync_catalog` action).
+    fn sync_active_catalog(&self) {
+        if let Some(p) = self.plan.as_ref() {
+            if let Some(d) = p.game.nexus_domain.clone() {
+                self.sync_catalog(d, false);
+            } else if let Some(d) = p.game.modrinth_domain.clone() {
+                self.sync_catalog(d, true);
+            }
+        }
+    }
+
     fn set_install_folder(&mut self, path: String) {
         let path = path.trim().to_owned();
         if path.is_empty() {
@@ -3586,13 +3745,11 @@ impl App {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let running = self.term.as_ref().is_some_and(|t| !t.finished());
                             if running && ui.small_button("stop").clicked() {
-                                if let Some(t) = &self.term {
-                                    t.kill();
-                                }
+                                self.dispatch_intent("agent_stop");
                             }
                             if !running && self.term.is_some() && ui.small_button("close").clicked()
                             {
-                                self.term = None;
+                                self.dispatch_intent("agent_close");
                             }
                         });
                     });
@@ -3615,7 +3772,7 @@ impl App {
                     if self.term.is_none() {
                         ui.add_space(8.0);
                         if ui.button("Open sandboxed shell").clicked() {
-                            self.start_agent_terminal();
+                            self.dispatch_intent("open_shell");
                         }
                         ui.add_space(6.0);
                         ui.weak(
@@ -4254,7 +4411,7 @@ impl App {
                     .on_hover_text("opens your Nexus API-access page in the browser")
                     .clicked()
                 {
-                    let _ = concierge_platform::open_url(NEXUS_API_ACCESS_URL);
+                    self.dispatch_intent("nexus_get_key");
                 }
                 ui.horizontal(|ui| {
                     ui.add(
@@ -4263,19 +4420,7 @@ impl App {
                             .hint_text("paste Nexus API key"),
                     );
                     if ui.button("Save & sign in").clicked() {
-                        let k = self.nexus_key_input.trim().to_owned();
-                        if !k.is_empty() {
-                            let dir = concierge_platform::config_dir();
-                            let _ = std::fs::create_dir_all(&dir);
-                            match std::fs::write(dir.join("nexus-api-key"), &k) {
-                                Ok(()) => {
-                                    self.nexus_key_input.clear();
-                                    // Validate immediately so the user sees "Signed in as X".
-                                    self.check_account();
-                                }
-                                Err(e) => self.error = Some(format!("couldn't save key: {e}")),
-                            }
-                        }
+                        self.dispatch_intent("nexus_save_key");
                     }
                 });
                 ui.add_space(4.0);
@@ -4291,16 +4436,14 @@ impl App {
                     .on_hover_text("register the nxm:// protocol handler for this user")
                     .clicked()
                 {
-                    match std::env::current_exe() {
-                        Ok(exe) => match concierge_platform::register_nxm_handler(&exe) {
-                            Ok(msg) => self.notice = Some(msg),
-                            Err(e) => self.error = Some(e),
-                        },
-                        Err(e) => self.error = Some(format!("couldn't find the app path: {e}")),
-                    }
+                    self.dispatch_intent("enable_1click");
                 }
                 ui.separator();
-                self.updates.render(ui);
+                let mut update_clicks: Vec<String> = Vec::new();
+                self.updates.render(ui, &mut update_clicks);
+                for id in update_clicks {
+                    self.dispatch_intent(&id);
+                }
                 ui.separator();
                 // Downloads / Behaviour / Interface settings. Persist + apply on change.
                 if downloads::settings_section(ui, &mut self.settings) {
@@ -4348,18 +4491,14 @@ impl App {
                                 )
                                 .clicked()
                             {
-                                self.detect_steam_install();
+                                self.dispatch_intent("detect_steam");
                             }
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.pristine_input)
                                     .hint_text("…or paste the install folder"),
                             );
                             if ui.button("Save path").clicked() {
-                                let p = self.pristine_input.trim().to_owned();
-                                if !p.is_empty() {
-                                    self.pristine_input.clear();
-                                    self.set_install_folder(p);
-                                }
+                                self.dispatch_intent("set_install_folder");
                             }
                         });
                     }
@@ -4418,19 +4557,7 @@ impl App {
                                 }
                             });
                         if ui.button("Save").clicked() {
-                            // empty field = keep the current value (don't clear).
-                            let gv = if self.mc_version_input.trim().is_empty() {
-                                cur_gv.clone()
-                            } else {
-                                self.mc_version_input.trim().to_owned()
-                            };
-                            let loader = if self.mc_loader_input.trim().is_empty() {
-                                cur_loader.clone()
-                            } else {
-                                self.mc_loader_input.trim().to_owned()
-                            };
-                            self.apply(Edit::SetCompat(gv, loader));
-                            self.notice = Some("Minecraft version + loader saved.".to_owned());
+                            self.dispatch_intent("save_compat");
                         }
                     });
                 }
@@ -4554,7 +4681,7 @@ impl App {
                             ))
                             .clicked()
                         {
-                            self.sync_catalog(d.clone(), is_modrinth);
+                            self.dispatch_intent("sync_catalog");
                         }
                     });
                     ui.separator();
@@ -4658,7 +4785,7 @@ impl App {
         // The ACTUAL reason a 1-click download "does nothing": no Nexus API key.
         // Surface it here (not just in the log) with a one-click path to fix it.
         let has_key = concierge::nexus::api_key().is_ok();
-        let mut open_settings = false;
+        let mut clicks: Vec<String> = Vec::new();
         egui::Window::new("Download session")
             .open(&mut open)
             .resizable(true)
@@ -4686,7 +4813,7 @@ impl App {
                                  downloads — Premium is only for fully-automatic fetching.)",
                             );
                             if ui.button("Open Settings").clicked() {
-                                open_settings = true;
+                                clicks.push("open_settings".to_owned());
                             }
                         });
                 }
@@ -4734,6 +4861,7 @@ impl App {
                                                     },
                                                     Some(d),
                                                 ) => {
+                                                    let _ = d;
                                                     if ui
                                                         .button("Open Nexus page")
                                                         .on_hover_text(
@@ -4741,15 +4869,9 @@ impl App {
                                                         )
                                                         .clicked()
                                                     {
-                                                        let page = concierge::nexus::file_page_url(
-                                                            d, *mod_id, *file_id,
-                                                        );
-                                                        diag::log(&format!(
-                                                            "browser: opening Nexus page (button \
-                                                             click, mod {mod_id} file {file_id}): \
-                                                             {page}"
+                                                        clicks.push(format!(
+                                                            "open_page:{mod_id}:{file_id}"
                                                         ));
-                                                        let _ = concierge_platform::open_url(&page);
                                                     }
                                                 }
                                                 (concierge::plan::Source::Url { .. }, _) => {
@@ -4771,18 +4893,22 @@ impl App {
             ctx.request_repaint_after(std::time::Duration::from_millis(400));
         }
         self.download_session_open = open;
-        if open_settings {
-            self.settings_open = true;
+        for id in clicks {
+            self.dispatch_intent(&id);
         }
     }
 
     fn browse_filters(&mut self, ui: &mut eframe::egui::Ui) {
         use concierge_ai::tools::SortBy;
         use eframe::egui;
-        let mut changed = false;
+        // Collect intent ids and dispatch after — every filter change goes through
+        // the shared vocabulary (browse_cat:/browse_sort:/browse_clear), so the
+        // agent view drives the same filters.
+        let mut clicks: Vec<String> = Vec::new();
+        let current = self.browse_category.clone();
+        let cur_sort = self.browse_sort;
         ui.horizontal_wrapped(|ui| {
             ui.label("category:");
-            let current = self.browse_category.clone();
             let label = current.as_deref().unwrap_or("All categories");
             egui::ComboBox::from_id_salt("browse_cat")
                 .selected_text(label)
@@ -4792,14 +4918,12 @@ impl App {
                         .selectable_label(current.is_none(), "All categories")
                         .clicked()
                     {
-                        self.browse_category = None;
-                        changed = true;
+                        clicks.push("browse_cat:".to_owned());
                     }
                     for (cat, n) in &self.browse_categories {
                         let sel = current.as_deref() == Some(cat.as_str());
                         if ui.selectable_label(sel, format!("{cat}  ({n})")).clicked() {
-                            self.browse_category = Some(cat.clone());
-                            changed = true;
+                            clicks.push(format!("browse_cat:{cat}"));
                         }
                     }
                 });
@@ -4807,30 +4931,24 @@ impl App {
             ui.add_space(8.0);
             ui.label("sort:");
             egui::ComboBox::from_id_salt("browse_sort")
-                .selected_text(self.browse_sort.label())
+                .selected_text(cur_sort.label())
                 .width(150.0)
                 .show_ui(ui, |ui| {
                     for opt in SortBy::all() {
-                        if ui
-                            .selectable_label(self.browse_sort == opt, opt.label())
-                            .clicked()
-                        {
-                            self.browse_sort = opt;
-                            changed = true;
+                        if ui.selectable_label(cur_sort == opt, opt.label()).clicked() {
+                            clicks.push(format!("browse_sort:{}", opt.label()));
                         }
                     }
                 });
 
-            if (self.browse_category.is_some() || self.browse_sort != SortBy::Endorsements)
+            if (self.browse_category.is_some() || cur_sort != SortBy::Endorsements)
                 && ui.button("clear").clicked()
             {
-                self.browse_category = None;
-                self.browse_sort = SortBy::Endorsements;
-                changed = true;
+                clicks.push("browse_clear".to_owned());
             }
         });
-        if changed {
-            self.do_browse_search();
+        for id in clicks {
+            self.dispatch_intent(&id);
         }
     }
 
