@@ -15,6 +15,7 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 
 mod diag;
+mod downloads;
 mod terminal;
 mod updates;
 
@@ -222,9 +223,12 @@ fn main() -> eframe::Result {
     updates::Updates::startup_cleanup();
     // Wire every family/leaf adapter crate into core's resolver at startup.
     concierge_games::register();
-    // The GUI never blasts a browser tab per uncached mod on Download — it drives
-    // page-opening through the guided one-at-a-time Download panel instead.
-    concierge::store::set_auto_open_browser(false);
+    // Load persisted settings into the process-global, then apply the ones core
+    // reads: whether Download opens Nexus pages one-at-a-time (guided) vs all at
+    // once. The download folder + concurrency + bandwidth are read live by the
+    // store / download manager.
+    let settings = concierge::settings::load();
+    concierge::store::set_auto_open_browser(!settings.open_pages_one_at_a_time);
     install_panic_hook();
     // A browser "Mod Manager Download" (nxm://) launches the app with the URL as
     // an arg; drop it in the inbox so the running instance pins it (its per-frame
@@ -490,6 +494,10 @@ struct App {
     settings_open: bool,
     /// In-app auto-updater state (roadmap 0.2).
     updates: updates::Updates,
+    /// Persisted user settings (download folder, concurrency, bandwidth, …).
+    settings: concierge::settings::Settings,
+    /// The background download-manager window.
+    downloads_window_open: bool,
     diff_open: bool,
     /// The enriched Preview text, computed once when the window opens (the
     /// per-file conflict scan touches disk, so it must stay off the render path).
@@ -629,6 +637,8 @@ impl App {
             quickstart_open: true,
             settings_open: false,
             updates: updates::Updates::default(),
+            settings: concierge::settings::get(),
+            downloads_window_open: false,
             diff_open: false,
             preview_lines: Vec::new(),
             browse_open: false,
@@ -2546,6 +2556,12 @@ impl App {
         }
         let busy = self.busy.load(Ordering::SeqCst);
 
+        // A Dark/Light theme setting wins; "System" leaves the manual toggle.
+        self.dark = match self.settings.theme {
+            concierge::settings::Theme::Dark => true,
+            concierge::settings::Theme::Light => false,
+            concierge::settings::Theme::System => self.dark,
+        };
         ctx.set_visuals(if self.dark {
             egui::Visuals::dark()
         } else {
@@ -2989,6 +3005,7 @@ impl App {
         });
 
         self.settings_panel(ctx);
+        downloads::manager_window(ctx, &mut self.downloads_window_open);
         self.diff_window(ctx);
         self.browse_window(ctx);
         self.download_window(ctx);
@@ -3249,6 +3266,13 @@ impl App {
                     {
                         self.quickstart_open = !self.quickstart_open;
                     }
+                    if ui
+                        .selectable_label(self.downloads_window_open, "\u{2b07} Downloads")
+                        .on_hover_text("the background download manager (queue, speeds, pause)")
+                        .clicked()
+                    {
+                        self.downloads_window_open = !self.downloads_window_open;
+                    }
                     self.render_kind(ui, concierge_ui::WidgetKind::Toggle);
                     if ui
                         .selectable_label(dark, if dark { "Dark" } else { "Light" })
@@ -3256,6 +3280,14 @@ impl App {
                         .clicked()
                     {
                         self.dark = !self.dark;
+                        // Persist so the choice sticks (and isn't overwritten by the
+                        // settings-driven theme each frame).
+                        self.settings.theme = if self.dark {
+                            concierge::settings::Theme::Dark
+                        } else {
+                            concierge::settings::Theme::Light
+                        };
+                        let _ = concierge::settings::save(&self.settings);
                     }
                     if ui
                         .selectable_label(ai_visible, "AI")
@@ -4092,6 +4124,14 @@ impl App {
                 }
                 ui.separator();
                 self.updates.render(ui);
+                ui.separator();
+                // Downloads / Behaviour / Interface settings. Persist + apply on change.
+                if downloads::settings_section(ui, &mut self.settings) {
+                    if let Err(e) = concierge::settings::save(&self.settings) {
+                        self.error = Some(format!("couldn't save settings: {e}"));
+                    }
+                    concierge::store::set_auto_open_browser(!self.settings.open_pages_one_at_a_time);
+                }
                 ui.separator();
                 ui.strong("Game install folder");
                 // Owned snapshot so the manifest borrow is released before the
