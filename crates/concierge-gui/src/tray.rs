@@ -108,9 +108,16 @@ mod imp {
 mod imp {
     use std::sync::mpsc::Sender;
 
-    /// No-op tray on platforms without a supported tray backend.
+    /// No-op tray on platforms without a supported tray backend. The methods
+    /// mirror the real impl's signatures (so callers are platform-agnostic), so
+    /// the unused `self`/args and const-ness are expected here.
     pub struct Tray;
 
+    #[allow(
+        clippy::unused_self,
+        clippy::missing_const_for_fn,
+        clippy::needless_pass_by_value
+    )]
     impl Tray {
         pub fn new(_actions: Sender<String>, _ctx: eframe::egui::Context) -> Option<Self> {
             None
