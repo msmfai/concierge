@@ -245,21 +245,99 @@ pub fn serve() -> io::Result<()> {
         }
         let _ = std::fs::remove_file(&path);
     }
+    // File-based liveness marker: the daemon now owns the heartbeat the nxm
+    // handoff checks (moved off the GUI), so a one-click always finds the
+    // always-on service.
+    concierge_platform::start_heartbeat(DAEMON_HEARTBEAT);
     serve_on(make_name()?)
 }
 
 // --- spawn-or-connect (client bootstrap) ------------------------------------
 
-/// Locate the daemon binary next to the current executable.
-fn daemon_exe() -> Option<PathBuf> {
+/// Locate a sibling binary (`stem`, `stem.exe` on Windows) next to the current
+/// executable — the daemon, the GUI, and the browser-launched nxm handler all
+/// live in the same directory (the `.app`'s `MacOS/`, or beside the exe).
+#[must_use]
+pub fn sibling_exe(stem: &str) -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
     let name = if cfg!(windows) {
-        "concierge-daemon.exe"
+        format!("{stem}.exe")
     } else {
-        "concierge-daemon"
+        stem.to_owned()
     };
     let path = dir.join(name);
     path.exists().then_some(path)
+}
+
+/// The daemon binary next to the current executable (for spawn / handler
+/// registration).
+#[must_use]
+pub fn daemon_exe() -> Option<PathBuf> {
+    sibling_exe("concierge-daemon")
+}
+
+/// Append a timestamped line to the daemon's own log file. A plain `fn(&str)` (no
+/// captures) so it can back [`concierge_platform::set_diag_logger`], giving the
+/// background service the same firehose the GUI has — so an nxm handoff or a
+/// download decision is reconstructable from disk.
+fn log_line(msg: &str) {
+    use std::io::Write as _;
+    let path = concierge_platform::config_dir().join("concierge-daemon.log");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "[{ts}] {msg}");
+    }
+}
+
+/// Wire the daemon's diagnostics to its log file. Call once at startup.
+pub fn install_logger() {
+    concierge_platform::set_diag_logger(log_line);
+    concierge_platform::diag(&format!(
+        "daemon: v{VERSION} starting (pid {})",
+        std::process::id()
+    ));
+}
+
+/// The name a GUI process refreshes so the daemon can tell one is running.
+const GUI_HEARTBEAT: &str = "concierge-gui";
+/// The name the daemon service refreshes (its file-based liveness marker).
+const DAEMON_HEARTBEAT: &str = "concierge-daemon";
+
+/// Handle an `nxm://` launch (the daemon is the registered handler): queue the
+/// url(s) in the inbox, ensure the download **service** and a **GUI** (which
+/// holds the active modpack, so it does the actual pin/download) are running,
+/// then return. At most one GUI is spawned, and only if none is live — so a
+/// one-click lands in the daemon and its running GUI, never a second window.
+pub fn handoff_nxm(urls: &[String]) {
+    for url in urls {
+        let _ = concierge::nexus::append_nxm_inbox(url);
+        concierge_platform::diag(&format!("daemon(nxm): queued {url}"));
+    }
+    // Ensure the always-on download service is up (a detached daemon, no args).
+    if !Client.is_alive() {
+        if let Some(exe) = daemon_exe() {
+            let _ = std::process::Command::new(exe).spawn();
+            concierge_platform::diag("daemon(nxm): started the background service");
+        }
+    }
+    // Ensure a GUI is live to drain + process the inbox. Spawn one ONLY if none
+    // is — that guard is what prevents a second window.
+    let gui_live = concierge_platform::heartbeat_age(GUI_HEARTBEAT).is_some_and(|age| age < 6);
+    if gui_live {
+        concierge_platform::diag("daemon(nxm): a GUI is live — it will pick up the inbox");
+    } else if let Some(exe) = sibling_exe(GUI_HEARTBEAT) {
+        let _ = std::process::Command::new(exe).spawn();
+        concierge_platform::diag("daemon(nxm): no live GUI — launched one to process the download");
+    }
 }
 
 /// Connect to a running daemon, or spawn one and wait for it to answer.
