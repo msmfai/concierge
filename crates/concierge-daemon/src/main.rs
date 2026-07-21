@@ -24,6 +24,7 @@ fn main() -> std::io::Result<()> {
         concierge_daemon::handoff_nxm(&nxm);
         return Ok(());
     }
-    // Otherwise run as the long-lived download service.
-    concierge_daemon::serve()
+    // Otherwise run as the long-lived download service — with the tray icon on
+    // the main thread (macOS/Windows) and the socket server behind it.
+    concierge_daemon::run_service()
 }

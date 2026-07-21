@@ -24,5 +24,12 @@ serde_json = "1"
 # stays within the workspace `unsafe_code = "forbid"` policy.
 interprocess = "2"
 
+# The tray icon lives in the daemon (the always-on process). Hosting a macOS
+# status item / Windows notification-area icon needs an OS event loop on the main
+# thread; winit provides that safely (a raw message pump would need unsafe).
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tray-icon = "0.19"
+winit = "0.30"
+
 [lints]
 workspace = true

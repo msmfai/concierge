@@ -17,7 +17,6 @@
 mod diag;
 mod downloads;
 mod terminal;
-mod tray;
 mod updates;
 
 use std::path::PathBuf;
@@ -44,18 +43,6 @@ enum CentralTab {
 
 /// The last action the user triggered — recorded so a panic log has context.
 static LAST_ACTION: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
-
-/// The main thread's id, recorded in `main`. The tray's menu backend (muda) must
-/// be created on the main thread on macOS; `update_ctx` runs there in production
-/// but on a worker thread under the kittest harness (which never calls `main`),
-/// so we gate tray creation on this. Unset (⇒ no tray) outside a real launch.
-static MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
-
-/// Whether the caller is the recorded main thread (false if `main` never ran,
-/// e.g. under a test harness).
-fn on_main_thread() -> bool {
-    MAIN_THREAD.get() == Some(&std::thread::current().id())
-}
 
 /// Where crash diagnostics are written (portable per-OS data dir).
 fn crash_log_path() -> std::path::PathBuf {
@@ -195,9 +182,6 @@ const NEXUS_API_ACCESS_URL: &str = "https://www.nexusmods.com/users/myaccount?ta
 const GUI_HEARTBEAT: &str = "concierge-gui";
 
 fn main() -> eframe::Result {
-    // Record the main thread so the tray (whose macOS menu backend must be built
-    // on it) is only created here, never on an off-main render (e.g. tests).
-    let _ = MAIN_THREAD.set(std::thread::current().id());
     // Surfaces wgpu/winit diagnostics when RUST_LOG is set (e.g.
     // RUST_LOG=wgpu_core=info,wgpu_hal=info); silent otherwise.
     env_logger::Builder::from_default_env().init();
@@ -263,6 +247,9 @@ fn main() -> eframe::Result {
     if concierge_daemon::spawn_or_connect().is_some() {
         install_daemon_download_sink();
     }
+    // Drop any stale "quit" marker from a previous session so it can't
+    // immediately close this fresh window (only a Quit clicked THIS session should).
+    concierge_daemon::clear_quit_request();
     // Render with wgpu, targeting each platform's native graphics API. The
     // default glow/OpenGL path fails on setups without a modern WGL/GL context
     // (older Intel drivers, VMs, remote desktop, Wine), so it isn't a reliable
@@ -592,16 +579,9 @@ struct App {
     /// When true, the download queue is read from and controlled via the daemon
     /// over IPC; when false, everything falls back to the in-process manager.
     daemon: bool,
-    /// The tray/menu-bar icon (macOS/Windows), created lazily on the first frame
-    /// once the egui `Context` exists; `None` before that or where unavailable.
-    tray: Option<tray::Tray>,
-    /// Whether tray creation has been attempted (once).
-    tray_init: bool,
-    /// Sender cloned into the tray thread; the receiver is drained in `update_ctx`
-    /// so tray clicks flow through the single `dispatch_intent` path.
-    tray_tx: std::sync::mpsc::Sender<String>,
-    tray_rx: std::sync::mpsc::Receiver<String>,
-    /// Tray-requested viewport changes, applied in `update_ctx` (which has `ctx`).
+    /// Viewport changes requested by the `show_window` / `quit` actions (the
+    /// daemon's tray drives `quit` via a marker file; an agent may drive either).
+    /// Applied in `update_ctx`, which holds the `ctx`.
     pending_show: bool,
     pending_quit: bool,
 }
@@ -661,7 +641,6 @@ impl App {
         let (log_tx, log_rx) = std::sync::mpsc::channel();
         let (flash_tx, flash_rx) = std::sync::mpsc::channel();
         let (browse_tx, browse_rx) = std::sync::mpsc::channel();
-        let (tray_tx, tray_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             workspace: None,
             games: Vec::new(),
@@ -733,10 +712,6 @@ impl App {
             // A live check: the daemon was already spawned in `main`, so this is
             // one fast socket round-trip. If it's down we use the in-process path.
             daemon: concierge_daemon::Client.is_alive(),
-            tray: None,
-            tray_init: false,
-            tray_tx,
-            tray_rx,
             pending_show: false,
             pending_quit: false,
         };
@@ -2748,48 +2723,19 @@ impl App {
     /// without an `eframe::Frame`. (visual-testing dossier item 2)
     fn update_ctx(&mut self, ctx: &eframe::egui::Context) {
         use eframe::egui;
-        // --- tray / menu-bar icon --------------------------------------------
-        // Create it lazily now that `ctx` exists (App::new has no Context), but
-        // only on the real main thread — muda (its macOS menu backend) panics if
-        // built off-main, and the kittest harness drives this on a worker thread.
-        if !self.tray_init && on_main_thread() {
-            self.tray_init = true;
-            self.tray = tray::Tray::new(self.tray_tx.clone(), ctx.clone());
+        // The daemon owns the tray now; its "Quit" asks any GUI to exit via a
+        // marker file. Consume it and close.
+        if concierge_daemon::take_quit_request() {
+            diag::log("daemon: quit requested — closing window");
+            self.pending_quit = true;
         }
-        // Tray clicks arrive as view-model action ids — run them through the ONE
-        // dispatch path so the tray can't drift from the GUI's own controls.
-        while let Ok(id) = self.tray_rx.try_recv() {
-            self.dispatch_intent(&id);
-        }
-        // Apply tray-requested viewport changes (dispatch_intent set the flags;
-        // only here do we hold `ctx` to issue the commands).
+        // Apply the `show_window` / `quit` actions (dispatch_intent set the flags;
+        // only here do we hold `ctx` to issue the viewport commands).
         if std::mem::take(&mut self.pending_show) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            diag::log("tray: show window");
         }
         if self.pending_quit {
-            diag::log("tray: quit");
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        // Refresh the tray's download-status line from the queue snapshot.
-        if let Some(tray) = &self.tray {
-            let (_, jobs) = self.dl_snapshot();
-            let active = jobs
-                .iter()
-                .filter(|j| {
-                    matches!(
-                        j.state,
-                        concierge::download_manager::JobState::Downloading
-                            | concierge::download_manager::JobState::Paused
-                    )
-                })
-                .count();
-            tray.set_status(&if active == 0 {
-                "Downloads: idle".to_owned()
-            } else {
-                format!("Downloads: {active} active")
-            });
         }
         // Log window focus / minimise transitions — a nxm one-click launching the
         // handler can steal focus or minimise/restore the window on Windows, and
@@ -2807,16 +2753,10 @@ impl App {
             self.diag_minimized = minimized;
         }
         if close_req {
-            diag::log("window: close requested");
-            // Hide to the tray instead of quitting (when enabled and a tray
-            // exists) — Concierge keeps running and the daemon keeps downloading;
-            // only the tray's Quit really exits. `pending_quit` means we ARE
-            // quitting from the tray, so don't intercept that close.
-            if self.settings.minimize_to_tray && self.tray.is_some() && !self.pending_quit {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                diag::log("window: hidden to tray (minimize_to_tray)");
-            }
+            // The GUI is ephemeral now: closing the window just quits it. The
+            // daemon (with the tray) keeps running and downloading; reopen from
+            // the tray's "Open Concierge".
+            diag::log("window: close requested — quitting (daemon keeps running in the tray)");
         }
         if self.download_session_open != self.diag_popup_open {
             diag::log(&format!(
