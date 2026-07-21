@@ -17,6 +17,7 @@
 mod diag;
 mod downloads;
 mod terminal;
+mod tray;
 mod updates;
 
 use std::path::PathBuf;
@@ -43,6 +44,18 @@ enum CentralTab {
 
 /// The last action the user triggered — recorded so a panic log has context.
 static LAST_ACTION: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// The main thread's id, recorded in `main`. The tray's menu backend (muda) must
+/// be created on the main thread on macOS; `update_ctx` runs there in production
+/// but on a worker thread under the kittest harness (which never calls `main`),
+/// so we gate tray creation on this. Unset (⇒ no tray) outside a real launch.
+static MAIN_THREAD: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
+
+/// Whether the caller is the recorded main thread (false if `main` never ran,
+/// e.g. under a test harness).
+fn on_main_thread() -> bool {
+    MAIN_THREAD.get() == Some(&std::thread::current().id())
+}
 
 /// Where crash diagnostics are written (portable per-OS data dir).
 fn crash_log_path() -> std::path::PathBuf {
@@ -208,6 +221,9 @@ fn start_heartbeat() {
 }
 
 fn main() -> eframe::Result {
+    // Record the main thread so the tray (whose macOS menu backend must be built
+    // on it) is only created here, never on an off-main render (e.g. tests).
+    let _ = MAIN_THREAD.set(std::thread::current().id());
     // Surfaces wgpu/winit diagnostics when RUST_LOG is set (e.g.
     // RUST_LOG=wgpu_core=info,wgpu_hal=info); silent otherwise.
     env_logger::Builder::from_default_env().init();
@@ -265,6 +281,14 @@ fn main() -> eframe::Result {
     // This instance is the live one: heartbeat so future nxm launches hand off to
     // it instead of opening a second window.
     start_heartbeat();
+    // Bring up the background download daemon (spawn it, or connect to a running
+    // one). If it's live, install a download sink so the byte-fetch runs IN the
+    // daemon process — a download then keeps going while the GUI window is hidden
+    // to the tray. If the daemon can't be reached, downloads run in-process
+    // exactly as before, so this never breaks downloading.
+    if concierge_daemon::spawn_or_connect().is_some() {
+        install_daemon_download_sink();
+    }
     // Render with wgpu, targeting each platform's native graphics API. The
     // default glow/OpenGL path fails on setups without a modern WGL/GL context
     // (older Intel drivers, VMs, remote desktop, Wine), so it isn't a reliable
@@ -330,6 +354,57 @@ fn main() -> eframe::Result {
             Ok(Box::new(App::new()))
         }),
     )
+}
+
+/// Install the daemon download sink: forward each byte-fetch to the running
+/// daemon (so it survives the window being hidden), with an in-process fallback
+/// on any IPC failure — so a daemon problem never breaks a download.
+fn install_daemon_download_sink() {
+    concierge::store::set_download_sink(std::sync::Arc::new(|name, url, dest| match daemon_fetch(
+        name, url, dest,
+    ) {
+        Ok(()) => Ok(()),
+        Err(DaemonFetch::Ipc(e)) => {
+            diag::log(&format!(
+                "download: daemon unreachable ({e}); running {name} in-process"
+            ));
+            concierge::download_manager::global().download(name, url, dest)
+        }
+        Err(DaemonFetch::Job(msg)) => Err(concierge::error::Error::Other(msg)),
+    }));
+}
+
+/// How a daemon-offloaded fetch ended.
+enum DaemonFetch {
+    /// The daemon was unreachable — fall back to an in-process download.
+    Ipc(std::io::Error),
+    /// The job ran in the daemon and ended non-successfully (cancel / failure).
+    Job(String),
+}
+
+/// Enqueue `url` in the daemon and block until its job is terminal, mirroring the
+/// blocking contract of the in-process `download` (the caller then verifies +
+/// places the resulting `.tmp`, which the daemon wrote to the shared store).
+fn daemon_fetch(name: &str, url: &str, dest: &std::path::Path) -> Result<(), DaemonFetch> {
+    use concierge::download_manager::JobState;
+    let client = concierge_daemon::Client;
+    let id = client
+        .enqueue(name, url, dest.to_path_buf())
+        .map_err(DaemonFetch::Ipc)?;
+    loop {
+        let snap = client.snapshot().map_err(DaemonFetch::Ipc)?;
+        if let Some(job) = snap.jobs.iter().find(|j| j.id == id) {
+            match &job.state {
+                JobState::Done => return Ok(()),
+                JobState::Cancelled => {
+                    return Err(DaemonFetch::Job(concierge::download::CANCELLED.to_owned()))
+                }
+                JobState::Failed(e) => return Err(DaemonFetch::Job(e.clone())),
+                JobState::Downloading | JobState::Paused => {}
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// egui's default text font lacks most symbols (arrows, dingbats, geometric
@@ -539,6 +614,22 @@ struct App {
     browse_refresh: Arc<AtomicBool>,
     mutable: bool,
     confirm: Option<Confirm>,
+    /// Whether the background download daemon is live (decided once at startup).
+    /// When true, the download queue is read from and controlled via the daemon
+    /// over IPC; when false, everything falls back to the in-process manager.
+    daemon: bool,
+    /// The tray/menu-bar icon (macOS/Windows), created lazily on the first frame
+    /// once the egui `Context` exists; `None` before that or where unavailable.
+    tray: Option<tray::Tray>,
+    /// Whether tray creation has been attempted (once).
+    tray_init: bool,
+    /// Sender cloned into the tray thread; the receiver is drained in `update_ctx`
+    /// so tray clicks flow through the single `dispatch_intent` path.
+    tray_tx: std::sync::mpsc::Sender<String>,
+    tray_rx: std::sync::mpsc::Receiver<String>,
+    /// Tray-requested viewport changes, applied in `update_ctx` (which has `ctx`).
+    pending_show: bool,
+    pending_quit: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -596,6 +687,7 @@ impl App {
         let (log_tx, log_rx) = std::sync::mpsc::channel();
         let (flash_tx, flash_rx) = std::sync::mpsc::channel();
         let (browse_tx, browse_rx) = std::sync::mpsc::channel();
+        let (tray_tx, tray_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             workspace: None,
             games: Vec::new(),
@@ -664,7 +756,21 @@ impl App {
             browse_refresh: Arc::new(AtomicBool::new(false)),
             mutable: true,
             confirm: None,
+            // A live check: the daemon was already spawned in `main`, so this is
+            // one fast socket round-trip. If it's down we use the in-process path.
+            daemon: concierge_daemon::Client.is_alive(),
+            tray: None,
+            tray_init: false,
+            tray_tx,
+            tray_rx,
+            pending_show: false,
+            pending_quit: false,
         };
+        if app.daemon {
+            let _ = app
+                .log_tx
+                .send("daemon: live — downloads run in the background service".to_owned());
+        }
         app.discover();
         // Surface a crash from a previous run (the panic hook wrote it), then
         // move it aside so it isn't re-reported.
@@ -792,6 +898,9 @@ impl App {
     fn ui_facts(&self) -> concierge_ui::UiFacts {
         let kind = self.plan.as_ref().map(|p| p.game.kind.clone());
         let lex = self.active_lexicon();
+        // The download queue: from the daemon when live, else the in-process
+        // manager (see `dl_snapshot`). One projection feeds both views.
+        let (downloads_paused_all, dl_jobs) = self.dl_snapshot();
         let confirm = self.confirm.as_ref().map(|c| match c {
             Confirm::RemoveMod(_) => concierge_ui::ConfirmKind::RemoveMod,
             Confirm::Undeploy => concierge_ui::ConfirmKind::Uninstall,
@@ -838,9 +947,8 @@ impl App {
             settings_open: self.settings_open,
             browse_open: self.browse_open,
             downloads_open: self.downloads_window_open,
-            downloads_paused_all: concierge::download_manager::global().is_paused_globally(),
-            downloads: concierge::download_manager::global()
-                .snapshot()
+            downloads_paused_all,
+            downloads: dl_jobs
                 .into_iter()
                 .map(|j| concierge_ui::DownloadRow {
                     id: j.id,
@@ -1173,6 +1281,50 @@ impl App {
         concierge_ui::build_screen(&self.ui_facts())
     }
 
+    /// The current download state — from the daemon when live, else the
+    /// in-process manager. Falls back to in-process if a daemon call fails, so a
+    /// daemon that died mid-session degrades gracefully rather than blanking the
+    /// queue.
+    fn dl_snapshot(&self) -> (bool, Vec<concierge::download_manager::JobView>) {
+        if self.daemon {
+            if let Ok(s) = concierge_daemon::Client.snapshot() {
+                return (s.paused_all, s.jobs);
+            }
+        }
+        let mgr = concierge::download_manager::global();
+        (mgr.is_paused_globally(), mgr.snapshot())
+    }
+
+    /// Apply a download-control action id (`dl_pause_all` / `dl_pause:<id>` / …)
+    /// to the daemon when live, else the in-process manager. The action id is the
+    /// SAME closed-vocabulary id both views and the daemon share.
+    fn dl_control(&self, id: &str) {
+        if self.daemon && concierge_daemon::Client.action(id).is_ok() {
+            return;
+        }
+        let mgr = concierge::download_manager::global();
+        match id {
+            "dl_pause_all" => mgr.pause_all(),
+            "dl_resume_all" => mgr.resume_all(),
+            "dl_clear" => mgr.clear_finished(),
+            _ => {
+                if let Some(r) = id.strip_prefix("dl_pause:") {
+                    if let Ok(n) = r.parse::<u64>() {
+                        mgr.pause(n);
+                    }
+                } else if let Some(r) = id.strip_prefix("dl_resume:") {
+                    if let Ok(n) = r.parse::<u64>() {
+                        mgr.resume(n);
+                    }
+                } else if let Some(r) = id.strip_prefix("dl_cancel:") {
+                    if let Ok(n) = r.parse::<u64>() {
+                        mgr.cancel(n);
+                    }
+                }
+            }
+        }
+    }
+
     /// Dispatch a widget intent (by its stable `concierge-ui` id) to the concrete
     /// behaviour. Every projected widget renders FROM the screen and calls this —
     /// so App mutates ONLY through here, never from a hand-coded widget.
@@ -1221,6 +1373,11 @@ impl App {
             "check_account" => self.check_account(),
             // chrome / panels — projected so the agent view drives them too
             "log_clear" => self.log.clear(),
+            // Tray / app-lifecycle: set a flag; `update_ctx` (which holds `ctx`)
+            // issues the viewport command. Routing through here keeps the tray on
+            // the same single mutation path as every other control.
+            "show_window" => self.pending_show = true,
+            "quit" => self.pending_quit = true,
             "open_quickstart" => self.quickstart_open = true,
             "toggle_quickstart" => self.quickstart_open = !self.quickstart_open,
             "toggle_theme" => {
@@ -1316,23 +1473,12 @@ impl App {
             // same controls (no direct manager calls scattered through the GUI).
             "open_downloads" => self.downloads_window_open = true,
             "close_downloads" => self.downloads_window_open = false,
-            "dl_pause_all" => concierge::download_manager::global().pause_all(),
-            "dl_resume_all" => concierge::download_manager::global().resume_all(),
-            "dl_clear" => concierge::download_manager::global().clear_finished(),
-            _ if id.starts_with("dl_pause:") => {
-                if let Ok(n) = id.trim_start_matches("dl_pause:").parse::<u64>() {
-                    concierge::download_manager::global().pause(n);
-                }
-            }
-            _ if id.starts_with("dl_resume:") => {
-                if let Ok(n) = id.trim_start_matches("dl_resume:").parse::<u64>() {
-                    concierge::download_manager::global().resume(n);
-                }
-            }
-            _ if id.starts_with("dl_cancel:") => {
-                if let Ok(n) = id.trim_start_matches("dl_cancel:").parse::<u64>() {
-                    concierge::download_manager::global().cancel(n);
-                }
+            "dl_pause_all" | "dl_resume_all" | "dl_clear" => self.dl_control(id),
+            _ if id.starts_with("dl_pause:")
+                || id.starts_with("dl_resume:")
+                || id.starts_with("dl_cancel:") =>
+            {
+                self.dl_control(id);
             }
             "browse_search" => self.do_browse_search(),
             "nxm_add" => {
@@ -2628,6 +2774,49 @@ impl App {
     /// without an `eframe::Frame`. (visual-testing dossier item 2)
     fn update_ctx(&mut self, ctx: &eframe::egui::Context) {
         use eframe::egui;
+        // --- tray / menu-bar icon --------------------------------------------
+        // Create it lazily now that `ctx` exists (App::new has no Context), but
+        // only on the real main thread — muda (its macOS menu backend) panics if
+        // built off-main, and the kittest harness drives this on a worker thread.
+        if !self.tray_init && on_main_thread() {
+            self.tray_init = true;
+            self.tray = tray::Tray::new(self.tray_tx.clone(), ctx.clone());
+        }
+        // Tray clicks arrive as view-model action ids — run them through the ONE
+        // dispatch path so the tray can't drift from the GUI's own controls.
+        while let Ok(id) = self.tray_rx.try_recv() {
+            self.dispatch_intent(&id);
+        }
+        // Apply tray-requested viewport changes (dispatch_intent set the flags;
+        // only here do we hold `ctx` to issue the commands).
+        if std::mem::take(&mut self.pending_show) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            diag::log("tray: show window");
+        }
+        if self.pending_quit {
+            diag::log("tray: quit");
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        // Refresh the tray's download-status line from the queue snapshot.
+        if let Some(tray) = &self.tray {
+            let (_, jobs) = self.dl_snapshot();
+            let active = jobs
+                .iter()
+                .filter(|j| {
+                    matches!(
+                        j.state,
+                        concierge::download_manager::JobState::Downloading
+                            | concierge::download_manager::JobState::Paused
+                    )
+                })
+                .count();
+            tray.set_status(&if active == 0 {
+                "Downloads: idle".to_owned()
+            } else {
+                format!("Downloads: {active} active")
+            });
+        }
         // Log window focus / minimise transitions — a nxm one-click launching the
         // handler can steal focus or minimise/restore the window on Windows, and
         // this makes that visible in the log, timestamped against the clicks.
@@ -2645,6 +2834,15 @@ impl App {
         }
         if close_req {
             diag::log("window: close requested");
+            // Hide to the tray instead of quitting (when enabled and a tray
+            // exists) — Concierge keeps running and the daemon keeps downloading;
+            // only the tray's Quit really exits. `pending_quit` means we ARE
+            // quitting from the tray, so don't intercept that close.
+            if self.settings.minimize_to_tray && self.tray.is_some() && !self.pending_quit {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                diag::log("window: hidden to tray (minimize_to_tray)");
+            }
         }
         if self.download_session_open != self.diag_popup_open {
             diag::log(&format!(

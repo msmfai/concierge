@@ -19,14 +19,14 @@ jobs:
         with:
           toolchain: "1.96.0"
       - uses: Swatinem/rust-cache@v2
-      - name: Build CLI + GUI
-        run: cargo build --release -p concierge -p concierge-gui
+      - name: Build CLI + GUI + daemon
+        run: cargo build --release -p concierge -p concierge-gui -p concierge-daemon
       - name: Package
         shell: pwsh
         run: |
           $name = "concierge-windows-dev"
           New-Item -ItemType Directory -Path $name | Out-Null
-          Copy-Item target/release/concierge.exe, target/release/concierge-gui.exe, LICENSE, README.md $name/
+          Copy-Item target/release/concierge.exe, target/release/concierge-gui.exe, target/release/concierge-daemon.exe, LICENSE, README.md $name/
           Compress-Archive -Path $name -DestinationPath "$name.zip"
       - uses: actions/upload-artifact@v4
         with:

@@ -9,13 +9,16 @@ REPO="${PWD}"
 APP="${CONCIERGE_APP_DIR:-${HOME}/Applications}/Concierge.app"
 CLAUDE_DIR="$(dirname "$(command -v claude 2>/dev/null || echo /usr/local/bin/claude)")"
 
-echo "==> building release (gui + cli)"
-cargo build --release -p concierge-gui -p concierge
+echo "==> building release (gui + cli + daemon)"
+cargo build --release -p concierge-gui -p concierge -p concierge-daemon
 
 echo "==> bundling ${APP}"
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 cp target/release/concierge-gui "${APP}/Contents/MacOS/concierge-gui"
+# The background download daemon lives beside the GUI so spawn-or-connect finds
+# it (concierge_daemon::daemon_exe looks next to the running executable).
+cp target/release/concierge-daemon "${APP}/Contents/MacOS/concierge-daemon"
 
 # A Finder-launched .app gets a bare PATH and no repo context. The bundle's
 # executable is a wrapper that sets CONCIERGE_REPO (so it finds games/) and a

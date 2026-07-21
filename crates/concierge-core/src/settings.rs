@@ -96,7 +96,10 @@ impl Default for Settings {
             theme: Theme::System,
             language: "en".to_owned(),
             show_advanced: false,
-            minimize_to_tray: false,
+            // Default ON: closing the window hides Concierge to the tray and it
+            // keeps running (the daemon keeps downloading); Quit from the tray is
+            // the real exit. Falls back to a normal quit where no tray exists.
+            minimize_to_tray: true,
         }
     }
 }

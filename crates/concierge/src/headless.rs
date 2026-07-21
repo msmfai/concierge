@@ -412,7 +412,10 @@ impl Headless {
             }
             "ai_send" | "ai_interrupt" | "ai_work" => format!("{id} (headless: AI not run)"),
             _ if id.starts_with("ai_quick:") => format!("{id} (headless: AI not run)"),
-            "rescan" | "create_empty" | "create_clone" | "new_modpack_ai" => {
+            "rescan" | "create_empty" | "create_clone" | "new_modpack_ai" | "show_window"
+            | "quit" => {
+                // `show_window`/`quit` are real actions for the GUI's tray; the
+                // headless view has no window/process to act on, so it records them.
                 format!("{id} (headless: not executed)")
             }
             "delete_profile" => {

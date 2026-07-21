@@ -30,8 +30,31 @@ pub fn validate(plan: &Plan) -> Result<Vec<Violation>> {
         .configs
         .iter()
         .find(|c| c.path.ends_with("modsettings.lsx"))
-        .and_then(|c| std::fs::read_to_string(&c.path).ok());
+        .and_then(|c| read_to_string_bounded(c.path.as_ref()));
     Ok(check(&mods, ms_text.as_deref()))
+}
+
+/// Read a file without letting a slow/blocking `open()` wedge the caller.
+///
+/// `modsettings.lsx` lives under the user's Documents, which on macOS is often
+/// iCloud-managed: an *evicted* (dataless) file blocks `open()` while the OS
+/// downloads it — for a long time, or forever when offline — and this runs on
+/// the GUI thread during plan reload, so a naive read freezes the whole app on
+/// launch. Bound it to a short budget on a worker thread; on timeout treat the
+/// file as unreadable (`None`), exactly like a genuine read error, so the lint
+/// simply skips the modsettings cross-check instead of hanging.
+fn read_to_string_bounded(path: &Path) -> Option<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = path.to_path_buf();
+    // The worker may stay blocked in `open()` if the file never materialises; it
+    // unwinds when the OS finishes (or the process exits). That's fine — we've
+    // already moved on.
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::read_to_string(&owned).ok());
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(750))
+        .ok()
+        .flatten()
 }
 
 fn check(mods: &Path, modsettings: Option<&str>) -> Vec<Violation> {

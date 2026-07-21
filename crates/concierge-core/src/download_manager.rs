@@ -5,7 +5,7 @@
 //! the caller's worker thread (the `store::fetch_all` pool bounds concurrency);
 //! the manager owns visibility and control, not its own thread pool.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -14,7 +14,7 @@ use crate::download::Control;
 use crate::error::Result;
 
 /// The lifecycle of one download.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JobState {
     Downloading,
     Paused,
@@ -24,7 +24,7 @@ pub enum JobState {
 }
 
 /// A snapshot of one job for the UI (no control handles).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct JobView {
     pub id: u64,
     pub name: String,
@@ -97,6 +97,27 @@ impl DownloadManager {
         let result = crate::download::fetch_to(url, dest, &handle);
         self.finish(handle.id, result.as_ref().err().map(ToString::to_string));
         result
+    }
+
+    /// Register a job and run its fetch on a NEW thread, returning the job id
+    /// immediately (vs [`download`](Self::download), which blocks the caller).
+    /// The daemon uses this so a client can poll the job by id while it runs on
+    /// the daemon's own thread — reusing the same `register`/`fetch_to`/`finish`
+    /// path, no duplicated download logic. Requires a `'static` manager (the
+    /// process-global) so the worker thread can record the final state.
+    pub fn spawn(&'static self, name: &str, url: String, dest: PathBuf) -> u64 {
+        self.inner.limiter.set_limit(
+            crate::settings::get()
+                .max_bandwidth_kib
+                .saturating_mul(1024),
+        );
+        let handle = self.register(name);
+        let id = handle.id;
+        std::thread::spawn(move || {
+            let result = crate::download::fetch_to(&url, &dest, &handle);
+            self.finish(id, result.as_ref().err().map(ToString::to_string));
+        });
+        id
     }
 
     fn register(&self, name: &str) -> JobHandle {

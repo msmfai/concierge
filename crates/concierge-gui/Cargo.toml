@@ -14,11 +14,12 @@ concierge-pluginorder = { path = "../concierge-pluginorder" }
 concierge-lint = { path = "../concierge-lint" }
 concierge-ai = { path = "../concierge-ai" }
 concierge-update = { path = "../concierge-update" }
+concierge-daemon = { path = "../concierge-daemon" }
 eframe = { version = "0.31", features = ["wgpu"] }
 vt100 = "0.15"
 serde_json = "1.0.150"
 env_logger = "0.11"
-concierge-db = { version = "0.11.3", path = "../concierge-db" }
+concierge-db = { version = "0.11.4", path = "../concierge-db" }
 
 # The embedded terminal's PTY backend. portable-pty's ConPTY delivers no child
 # output on Windows (verified in CI), so use the dedicated `conpty` crate there.
@@ -27,6 +28,11 @@ portable-pty = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 conpty = "0.7"
+
+# Platform tray/menu-bar icon: macOS status item, Windows notification area.
+# (Linux tray needs gtk/appindicator, out of scope — the app runs fine without.)
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tray-icon = "0.19"
 
 [dev-dependencies]
 # Drives the real App::update through egui's AccessKit tree (semantic queries)
