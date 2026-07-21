@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "concierge"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "clap",
  "concierge-ai",
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-ai"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-db",
@@ -914,7 +914,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-ba2"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "flate2",
  "proptest",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-core"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-fomod",
  "concierge-games",
@@ -944,7 +944,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-daemon"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-platform",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-db"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-platform",
  "md-5",
@@ -969,7 +969,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-esp"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "flate2",
  "proptest",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-fallout3"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-pluginorder",
@@ -986,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-fallout4"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-pluginorder",
@@ -994,21 +994,21 @@ dependencies = [
 
 [[package]]
 name = "concierge-filedrop"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
 ]
 
 [[package]]
 name = "concierge-fomod"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "roxmltree",
 ]
 
 [[package]]
 name = "concierge-games"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-fallout3",
@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-gui"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-ai",
  "concierge-core",
@@ -1055,18 +1055,18 @@ dependencies = [
 
 [[package]]
 name = "concierge-hash"
-version = "0.11.4"
+version = "0.11.5"
 
 [[package]]
 name = "concierge-jarmods"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
 ]
 
 [[package]]
 name = "concierge-lint"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-pluginorder",
@@ -1079,21 +1079,21 @@ dependencies = [
 
 [[package]]
 name = "concierge-modfolders"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
 ]
 
 [[package]]
 name = "concierge-modlist"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
 ]
 
 [[package]]
 name = "concierge-modpack-import"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-newvegas"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-pluginorder",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-oblivion"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-pluginorder",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-override"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "proptest",
@@ -1129,28 +1129,28 @@ dependencies = [
 
 [[package]]
 name = "concierge-pakregistry"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
 ]
 
 [[package]]
 name = "concierge-patch"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "qbsdiff",
 ]
 
 [[package]]
 name = "concierge-platform"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "concierge-pluginorder"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-ba2",
  "concierge-core",
@@ -1167,14 +1167,14 @@ dependencies = [
 
 [[package]]
 name = "concierge-runtimeinject"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
 ]
 
 [[package]]
 name = "concierge-skyrim"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-pluginorder",
@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-skyrimse"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-pluginorder",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "concierge-starfield"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
  "concierge-pluginorder",
@@ -1198,21 +1198,21 @@ dependencies = [
 
 [[package]]
 name = "concierge-toolmerge"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-core",
 ]
 
 [[package]]
 name = "concierge-ui"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "concierge-update"
-version = "0.11.4"
+version = "0.11.5"
 dependencies = [
  "concierge-platform",
  "hex",

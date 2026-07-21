@@ -7,8 +7,23 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() -> std::io::Result<()> {
+    // Firehose: capture the daemon's own diagnostics (handoff, downloads) to a
+    // log file, the same discipline the GUI follows.
+    concierge_daemon::install_logger();
     // Load persisted settings into the process-global so the manager reads the
     // user's bandwidth cap (the GUI writes the same file).
     concierge::settings::load();
+    // The browser registers THIS binary as the nxm:// handler (`concierge-daemon
+    // nxm "%1"`). In that mode we're a short-lived handoff: queue the url, make
+    // sure the service + a GUI are up, and exit — never a second window.
+    let nxm: Vec<String> = std::env::args()
+        .skip(1)
+        .filter(|a| a.starts_with("nxm://"))
+        .collect();
+    if !nxm.is_empty() {
+        concierge_daemon::handoff_nxm(&nxm);
+        return Ok(());
+    }
+    // Otherwise run as the long-lived download service.
     concierge_daemon::serve()
 }

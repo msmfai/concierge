@@ -188,37 +188,11 @@ fn windows_has_vulkan_loader() -> bool {
 /// validate is the friction-minimal sign-in (roadmap 0.1, Vortex's own fallback).
 const NEXUS_API_ACCESS_URL: &str = "https://www.nexusmods.com/users/myaccount?tab=api+access";
 
-/// Shared liveness marker so an nxm-launched process can tell a Concierge is
-/// already running and hand off to it (rather than opening a second window).
-fn heartbeat_path() -> std::path::PathBuf {
-    concierge_platform::config_dir().join("concierge-gui.heartbeat")
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-/// Age of the heartbeat in seconds, or `None` if it's missing/unreadable.
-fn heartbeat_age() -> Option<u64> {
-    std::fs::read_to_string(heartbeat_path())
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .map(|t| now_secs().saturating_sub(t))
-}
-
-/// Background thread that keeps the heartbeat fresh for the life of the process.
-fn start_heartbeat() {
-    let path = heartbeat_path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::thread::spawn(move || loop {
-        let _ = std::fs::write(&path, now_secs().to_string());
-        std::thread::sleep(std::time::Duration::from_secs(2));
-    });
-}
+/// The GUI's own liveness marker. The daemon (the nxm handler) reads this to tell
+/// whether a GUI is already up before launching one — see
+/// [`concierge_platform::heartbeat_age`]. The nxm-handoff *liveness* itself now
+/// lives on the daemon; this just says "a window is open".
+const GUI_HEARTBEAT: &str = "concierge-gui";
 
 fn main() -> eframe::Result {
     // Record the main thread so the tray (whose macOS menu backend must be built
@@ -246,11 +220,11 @@ fn main() -> eframe::Result {
     let settings = concierge::settings::load();
     concierge::store::set_auto_open_browser(!settings.open_pages_one_at_a_time);
     install_panic_hook();
-    // A browser "Mod Manager Download" (nxm://) launches the app with the URL as
-    // an arg; drop it in the inbox so the running instance pins it (its per-frame
-    // inbox poll in update() picks it up). CRUCIAL: if a Concierge is already
-    // running, HAND OFF and exit — otherwise every download would open a second
-    // window instead of landing in the user's open Concierge.
+    // A browser "Mod Manager Download" (nxm://) normally launches the DAEMON now
+    // (the registered handler), which queues the url + ensures a GUI is up. But an
+    // older registration may still point at the GUI, so keep a fallback here: drop
+    // the url in the inbox and hand off to an already-open GUI rather than opening
+    // a second window; if none is open, this becomes the live instance.
     let nxm_urls: Vec<String> = std::env::args()
         .skip(1)
         .filter(|a| a.starts_with("nxm://"))
@@ -263,7 +237,7 @@ fn main() -> eframe::Result {
         // Log the decision either way so a "second window opened" report is
         // diagnosable from the log alone: heartbeat present+fresh => hand off;
         // absent/stale => this becomes the live instance and opens a window.
-        match heartbeat_age() {
+        match concierge_platform::heartbeat_age(GUI_HEARTBEAT) {
             Some(age) if age < 6 => {
                 diag::log(&format!(
                     "nxm handoff: live Concierge found (heartbeat {age}s old) — handed off via inbox, exiting"
@@ -278,9 +252,9 @@ fn main() -> eframe::Result {
             ),
         }
     }
-    // This instance is the live one: heartbeat so future nxm launches hand off to
-    // it instead of opening a second window.
-    start_heartbeat();
+    // Mark that a GUI window is open, so the daemon's nxm handler doesn't launch
+    // a second one (and the fallback above can hand off to us).
+    concierge_platform::start_heartbeat(GUI_HEARTBEAT);
     // Bring up the background download daemon (spawn it, or connect to a running
     // one). If it's live, install a download sink so the byte-fetch runs IN the
     // daemon process — a download then keeps going while the GUI window is hidden
@@ -3728,12 +3702,17 @@ impl App {
 
     /// Register the nxm:// protocol handler (the `enable_1click` action).
     fn enable_1click(&mut self) {
-        match std::env::current_exe() {
-            Ok(exe) => match concierge_platform::register_nxm_handler(&exe) {
+        // Register the DAEMON as the nxm:// handler so a browser one-click lands
+        // in the always-on background service (it queues the download + ensures a
+        // GUI is up), never a second window. Fall back to the GUI itself if the
+        // daemon binary isn't beside us (e.g. a dev run of just the GUI).
+        let handler = concierge_daemon::daemon_exe().or_else(|| std::env::current_exe().ok());
+        match handler {
+            Some(exe) => match concierge_platform::register_nxm_handler(&exe) {
                 Ok(msg) => self.notice = Some(msg),
                 Err(e) => self.error = Some(e),
             },
-            Err(e) => self.error = Some(format!("couldn't find the app path: {e}")),
+            None => self.error = Some("couldn't find the app path to register".to_owned()),
         }
     }
 

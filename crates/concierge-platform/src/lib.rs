@@ -447,6 +447,44 @@ pub fn config_dir() -> PathBuf {
         .join("concierge")
 }
 
+/// Path of a named liveness heartbeat file (`<name>.heartbeat`) under the config
+/// dir. A process refreshes its own; another reads [`heartbeat_age`] to tell if
+/// that process is alive — the file-based handoff the daemon + GUI use so an
+/// `nxm://` one-click reaches a running instance instead of opening a new window.
+#[must_use]
+pub fn heartbeat_path(name: &str) -> PathBuf {
+    config_dir().join(format!("{name}.heartbeat"))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Age in seconds of the named heartbeat, or `None` if it's missing/unreadable
+/// (⇒ that process isn't running). Freshness is the caller's call (< ~6s = live).
+#[must_use]
+pub fn heartbeat_age(name: &str) -> Option<u64> {
+    std::fs::read_to_string(heartbeat_path(name))
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|t| now_secs().saturating_sub(t))
+}
+
+/// Spawn a detached thread that refreshes the named heartbeat every 2s for the
+/// life of the process. Call once at startup.
+pub fn start_heartbeat(name: &str) {
+    let path = heartbeat_path(name);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::thread::spawn(move || loop {
+        let _ = std::fs::write(&path, now_secs().to_string());
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    });
+}
+
 /// Path to a named config file under [`config_dir`]. If it isn't there yet but a
 /// legacy `~/.config/fo4nix/<name>` exists, return the legacy path so existing
 /// keys keep working after the rename.
@@ -486,7 +524,32 @@ pub fn data_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_tool, nxm_desktop_entry, override_env, tools_dir};
+    use super::{
+        find_tool, heartbeat_age, heartbeat_path, now_secs, nxm_desktop_entry, override_env,
+        tools_dir,
+    };
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn heartbeat_writes_and_ages() {
+        // A unique name so this never collides with a live daemon/GUI heartbeat.
+        let name = format!("test-hb-{}", std::process::id());
+        assert!(
+            heartbeat_age(&name).is_none(),
+            "no heartbeat ⇒ None (not live)"
+        );
+        let path = heartbeat_path(&name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, now_secs().to_string()).unwrap();
+        let age = heartbeat_age(&name).unwrap();
+        assert!(
+            age < 5,
+            "a just-written heartbeat reads as fresh (got {age}s)"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn nxm_desktop_entry_routes_the_scheme_to_the_exe() {
