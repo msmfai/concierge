@@ -363,6 +363,61 @@ pub fn auto_open_browser_enabled() -> bool {
     AUTO_OPEN_BROWSER.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// A process-global override for the byte-fetch step of [`download`]: given
+/// `(name, url, dest)`, fetch the bytes to `dest`. The GUI installs one that runs
+/// the fetch in the **daemon** process (so a download keeps going when the GUI
+/// window is hidden). When unset — the default, and whenever no daemon is
+/// reachable — downloads run in-process via the global manager, exactly as
+/// before. This is the seam that makes the daemon offload safe and reversible.
+type DownloadSink = dyn Fn(&str, &str, &std::path::Path) -> Result<()> + Send + Sync;
+static DOWNLOAD_SINK: std::sync::RwLock<Option<std::sync::Arc<DownloadSink>>> =
+    std::sync::RwLock::new(None);
+
+/// Install the download sink (see [`DownloadSink`]).
+pub fn set_download_sink(sink: std::sync::Arc<DownloadSink>) {
+    if let Ok(mut g) = DOWNLOAD_SINK.write() {
+        *g = Some(sink);
+    }
+}
+
+/// Clear the download sink — fall back to in-process downloads.
+pub fn clear_download_sink() {
+    if let Ok(mut g) = DOWNLOAD_SINK.write() {
+        *g = None;
+    }
+}
+
+/// The installed sink, if any (cloned out so the lock isn't held during fetch).
+fn download_sink() -> Option<std::sync::Arc<DownloadSink>> {
+    DOWNLOAD_SINK.read().ok().and_then(|g| g.clone())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod sink_tests {
+    use super::{clear_download_sink, download_sink, set_download_sink};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn sink_installs_routes_and_clears() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        assert!(download_sink().is_none(), "no sink by default");
+        set_download_sink(Arc::new(|_name, _url, _dest| {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }));
+        let sink = download_sink().unwrap();
+        sink("m", "http://x", std::path::Path::new("/tmp/x")).unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1, "installed sink is invoked");
+        clear_download_sink();
+        assert!(
+            download_sink().is_none(),
+            "cleared sink falls back to in-process"
+        );
+    }
+}
+
 /// Best-effort: open a URL in the user's browser (the manual-download page).
 /// Returns whether it actually launched — suppressed under tests/headless runs,
 /// or when the caller (the GUI) has opted out of auto-opening.
@@ -483,8 +538,16 @@ fn download(repo: &Repo, file: &str, url: &str) -> Result<PathBuf> {
         std::fs::copy(local, &tmp).ctx(&tmp)?;
         return Ok(tmp);
     }
-    // Route through the background download manager: resumable + retrying, with
-    // live per-file progress/speed and pause/cancel/throttle visible in the UI.
+    // If a sink is installed (the GUI's daemon offload), run the byte-fetch there
+    // so the download survives the window being hidden; the daemon writes to the
+    // SAME `.tmp` in the shared store, and we return it for verify+place here.
+    if let Some(sink) = download_sink() {
+        sink(file, url, &tmp)?;
+        return Ok(tmp);
+    }
+    // Otherwise route through the in-process background download manager:
+    // resumable + retrying, with live per-file progress/speed and
+    // pause/cancel/throttle visible in the UI.
     crate::download_manager::global().download(file, url, &tmp)?;
     Ok(tmp)
 }

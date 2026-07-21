@@ -1,0 +1,28 @@
+[package]
+name = "concierge-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concierge background download daemon — the server half of the client/server split"
+
+[[bin]]
+name = "concierge-daemon"
+path = "src/main.rs"
+
+[lib]
+name = "concierge_daemon"
+path = "src/lib.rs"
+
+[dependencies]
+concierge-core = { path = "../concierge-core" }
+concierge-ui = { path = "../concierge-ui" }
+concierge-platform = { path = "../concierge-platform" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Local-socket transport: Unix domain socket on unix, named pipe on Windows.
+# The crate encapsulates the platform FFI (which needs unsafe) so our own code
+# stays within the workspace `unsafe_code = "forbid"` policy.
+interprocess = "2"
+
+[lints]
+workspace = true

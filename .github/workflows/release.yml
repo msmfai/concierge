@@ -48,8 +48,8 @@ jobs:
           sudo apt-get install -y \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxkbcommon-dev libwayland-dev libgl1-mesa-dev libegl1-mesa-dev
-      - name: Build CLI + GUI
-        run: cargo build --release -p concierge -p concierge-gui
+      - name: Build CLI + GUI + daemon
+        run: cargo build --release -p concierge -p concierge-gui -p concierge-daemon
       - name: Resolve tag
         id: tag
         shell: bash
@@ -60,7 +60,7 @@ jobs:
         run: |
           name="concierge-${{ steps.tag.outputs.tag }}-${{ matrix.label }}"
           mkdir "$name"
-          cp target/release/concierge target/release/concierge-gui LICENSE README.md "$name"/
+          cp target/release/concierge target/release/concierge-gui target/release/concierge-daemon LICENSE README.md "$name"/
           tar -czf "$name.tar.gz" "$name"
       - name: Package (windows)
         if: matrix.archive == 'zip'
@@ -68,7 +68,7 @@ jobs:
         run: |
           $name = "concierge-${{ steps.tag.outputs.tag }}-${{ matrix.label }}"
           New-Item -ItemType Directory -Path $name | Out-Null
-          Copy-Item target/release/concierge.exe, target/release/concierge-gui.exe, LICENSE, README.md $name/
+          Copy-Item target/release/concierge.exe, target/release/concierge-gui.exe, target/release/concierge-daemon.exe, LICENSE, README.md $name/
           Compress-Archive -Path $name -DestinationPath "$name.zip"
       - name: Upload to release
         shell: bash

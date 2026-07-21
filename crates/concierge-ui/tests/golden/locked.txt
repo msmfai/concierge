@@ -48,6 +48,8 @@ TRANSITIONS:
   toggle_quickstart quick start              [enabled]
   open_quickstart  open quick-start guide   [enabled]
   log_clear        clear log                [enabled]
+  show_window      show window              [enabled]
+  quit             quit                     [enabled]
   open_download_session download session         [enabled]
   select_game:0    game: skyrimse           [enabled]
   select_game:1    game: fallout4           [enabled]

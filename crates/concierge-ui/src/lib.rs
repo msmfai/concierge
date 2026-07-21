@@ -167,6 +167,10 @@ intents! {
     AgentClose => "agent_close",
     SyncCatalog => "sync_catalog",
     BrowseClear => "browse_clear",
+    // Tray / app-lifecycle actions (the daemon-backed tray drives these; the
+    // agent view can too — quit an unattended run, or bring the window forward).
+    ShowWindow => "show_window",
+    QuitApp => "quit",
     // Settings actions
     DetectSteam => "detect_steam",
     SetInstallFolder => "set_install_folder",
@@ -782,6 +786,10 @@ fn base_transitions(f: &UiFacts) -> Vec<Transition> {
         None,
     ));
     v.push(t(Intent::LogClear, "clear log", true, None));
+    // Tray / app-lifecycle — always available, so the tray (and the agent view)
+    // can bring the window forward or quit from any screen.
+    v.push(t(Intent::ShowWindow, "show window", true, None));
+    v.push(t(Intent::QuitApp, "quit", true, None));
     v.push(t(
         Intent::OpenDownloadSession,
         "download session",
