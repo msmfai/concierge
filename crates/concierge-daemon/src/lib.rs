@@ -32,6 +32,10 @@ use interprocess::local_socket::{GenericNamespaced, ToNsName};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+/// The system-tray icon + its host event loop (macOS/Windows only).
+#[cfg(any(target_os = "macos", windows))]
+mod tray;
+
 /// This build's version, returned by [`Request::Ping`] so a client can tell a
 /// stale daemon from a fresh one before handing work to it.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -329,14 +333,84 @@ pub fn handoff_nxm(urls: &[String]) {
             concierge_platform::diag("daemon(nxm): started the background service");
         }
     }
-    // Ensure a GUI is live to drain + process the inbox. Spawn one ONLY if none
-    // is — that guard is what prevents a second window.
-    let gui_live = concierge_platform::heartbeat_age(GUI_HEARTBEAT).is_some_and(|age| age < 6);
-    if gui_live {
-        concierge_platform::diag("daemon(nxm): a GUI is live — it will pick up the inbox");
-    } else if let Some(exe) = sibling_exe(GUI_HEARTBEAT) {
+    // Ensure a GUI is live to drain + process the inbox (it holds the active
+    // modpack). Spawns one ONLY if none is live — the no-second-window guard.
+    ensure_gui();
+}
+
+/// Ensure a GUI window is running — spawn one next to us only if none is live
+/// (the `concierge-gui` heartbeat is fresh). Used by the tray's "Open Concierge"
+/// and the nxm handoff. Focusing an already-open window cross-process isn't
+/// attempted; the common case is "none open → launch one".
+pub fn ensure_gui() {
+    if concierge_platform::heartbeat_age(GUI_HEARTBEAT).is_some_and(|age| age < 6) {
+        concierge_platform::diag("daemon: a GUI is already live");
+    } else if let Some(exe) = sibling_exe("concierge-gui") {
         let _ = std::process::Command::new(exe).spawn();
-        concierge_platform::diag("daemon(nxm): no live GUI — launched one to process the download");
+        concierge_platform::diag("daemon: launched a GUI");
+    }
+}
+
+/// Where the daemon leaves a "quit" marker for the GUI. Tray → Quit stops the
+/// daemon AND asks any open GUI to exit (the client can't be pushed to over the
+/// per-call socket, so a file is the simplest cross-process signal).
+fn quit_marker_path() -> PathBuf {
+    concierge_platform::config_dir().join("concierge.quit")
+}
+
+/// Ask any running GUI to quit (called by the tray's Quit before the daemon
+/// exits). Only drops the marker when a GUI is actually live, so a stale marker
+/// can't linger and kill the *next* GUI that starts.
+pub fn request_gui_quit() {
+    if concierge_platform::heartbeat_age(GUI_HEARTBEAT).is_some_and(|age| age < 6) {
+        let _ = std::fs::write(quit_marker_path(), "1");
+    }
+}
+
+/// Clear any leftover quit marker — the GUI calls this once at startup so a
+/// marker from a previous session can't immediately close a fresh window.
+pub fn clear_quit_request() {
+    let _ = std::fs::remove_file(quit_marker_path());
+}
+
+/// The GUI calls this each frame: if a quit was requested, consume the marker and
+/// return `true` (the GUI then closes its window).
+#[must_use]
+pub fn take_quit_request() -> bool {
+    let path = quit_marker_path();
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+        true
+    } else {
+        false
+    }
+}
+
+/// Run the daemon **service**: the socket server + heartbeat, plus — on
+/// macOS/Windows — the system-tray icon, whose OS event loop owns the main
+/// thread. Blocks until the tray's Quit (or, on Linux, a fatal listener error).
+///
+/// # Errors
+/// Propagates a fatal listener error on platforms without a tray.
+pub fn run_service() -> io::Result<()> {
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        // The socket server + heartbeat run on a background thread so the tray can
+        // own the main thread (its event loop must run there).
+        std::thread::spawn(|| {
+            if let Err(e) = serve() {
+                concierge_platform::diag(&format!("daemon: serve error: {e}"));
+            }
+        });
+        tray::run();
+        // Tray Quit fell through: clear our own liveness so nothing thinks the
+        // service is still up, then let the process exit.
+        let _ = std::fs::remove_file(concierge_platform::heartbeat_path(DAEMON_HEARTBEAT));
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        serve()
     }
 }
 
