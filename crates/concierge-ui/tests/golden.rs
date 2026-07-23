@@ -45,7 +45,12 @@ fn golden(name: &str, facts: &UiFacts) {
     if std::env::var("BLESS").is_ok() {
         std::fs::write(&path, &got).unwrap();
     }
-    let want = std::fs::read_to_string(&path).unwrap_or_default();
+    // A loud read: a missing/unreadable golden must say WHY, not silently
+    // compare against "" (which reports as a confusing full-diff mismatch).
+    let want = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => panic!("golden {path} unreadable: {e}"),
+    };
     assert_eq!(
         got, want,
         "golden mismatch for {name} — run BLESS=1 to update"

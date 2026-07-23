@@ -179,7 +179,7 @@ impl GameAdapter for Bethesda {
         Some(format!(
             "- **Load order is the whole game.** Plugins (`.esp`/`.esm`/`.esl`) load in order and \
              later entries win; a plugin whose master is missing or loads below it crashes on \
-             launch. `concierge sort --apply` applies LOOT rules; `concierge realize` refuses on \
+             launch. `concierge-cli sort --apply` applies LOOT rules; `concierge-cli realize` refuses on \
              missing masters. Mind the 254 full-plugin limit (`.esl`-flagged plugins don't count).\n\
              - **{se_name} is foundational, not a mod like the others.** Many script-based mods \
              require it. It is a *promoted tool*: it installs to the game root and the game \

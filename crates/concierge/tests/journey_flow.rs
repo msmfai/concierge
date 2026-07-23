@@ -44,7 +44,7 @@ fn read(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap()
 }
 
-/// The CLI `concierge realize` must self-heal install layout the same way the
+/// The CLI `concierge-cli realize` must self-heal install layout the same way the
 /// GUI's Apply does — strip JOURNEY's versioned root into `subdir` and activate
 /// `Journey.esp` — so a pinned mod with no layout config still deploys right.
 #[test]
@@ -83,7 +83,7 @@ fn cli_realize_self_heals_journey_layout() {
     )
     .unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_concierge"))
+    let out = Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
         .arg("realize")
         .env("CONCIERGE_REPO", &profile)
         .output()

@@ -16,7 +16,7 @@ game, sorts the load order, and launches. The original game install is never
 modified.
 
 It is built to be operated by an AI assistant as well as by hand: each pack
-carries the instructions an assistant needs, and `concierge shell` runs one in
+carries the instructions an assistant needs, and `concierge-cli shell` runs one in
 a sandbox that can only write where the pack allows. You can tell an assistant
 what kind of playthrough you want and let it assemble and maintain the pack;
 everything it does ends up in the same text file you can inspect and edit.
@@ -90,30 +90,32 @@ you can inspect.
 
 Download a build from the
 [releases page](https://github.com/msmfai/concierge/releases/latest) — each
-archive contains both the `concierge` command-line tool and the `concierge-gui`
-app for your platform — or build from source with `cargo build --release`.
+archive contains the `concierge` app and the `concierge-cli` command-line tool
+for your platform — or build from source with `cargo build --release`.
 
-**The app** sets itself up on first run: launch `concierge-gui`, use the
+**The app** sets itself up on first run: launch `concierge` (it opens the GUI
+and brings up the background download daemon, like any desktop mod manager) —
+then use the
 **“+ add game”** menu to pick your game, then create a profile — no paths or
 config files to hand-edit to get started.
 
 **The command line** scaffolds a profile for you:
 
 ```sh
-concierge init --game fallout4 my-pack   # scaffold a profile folder
+concierge-cli init --game fallout4 my-pack   # scaffold a profile folder
 $EDITOR my-pack/manifest.toml            # set where your game lives
 export CONCIERGE_REPO=$PWD/my-pack
 
-concierge preview                    # show what would be installed
-concierge realize --sort             # download, install, sort
-concierge doctor                     # health check
-concierge launch                     # run the game
+concierge-cli preview                    # show what would be installed
+concierge-cli realize --sort             # download, install, sort
+concierge-cli doctor                     # health check
+concierge-cli launch                     # run the game
 ```
 
 To let an assistant do the work instead:
 
 ```sh
-concierge shell --agent claude       # sandboxed agent session in the pack
+concierge-cli shell --agent claude       # sandboxed agent session in the pack
 ```
 
 Runtime dependency: `bsdtar` (preinstalled on macOS and Windows 10+;

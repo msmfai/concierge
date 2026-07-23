@@ -98,7 +98,7 @@ fn inert_deployed_esp_does_not_satisfy_a_master() {
     )
     .unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_concierge"))
+    let out = Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
         .arg("realize")
         .env("CONCIERGE_REPO", &profile)
         .output()

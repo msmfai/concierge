@@ -1,5 +1,5 @@
 //! Pre-launch validators — each game's crash-causing modding invariants, so
-//! `concierge realize` / `concierge doctor` fail with a specific, cited reason
+//! `concierge-cli realize` / `concierge-cli doctor` fail with a specific, cited reason
 //! instead of a runtime crash. The LOOT / MO2 / SMAPI / BG3MM role, unified
 //! behind one [`validate`] entry point.
 //!

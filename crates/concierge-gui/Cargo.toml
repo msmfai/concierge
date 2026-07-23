@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "Concierge desktop UI (prototype)"
 
+# The USER-FACING binary: double-clicking `concierge` opens the GUI and brings
+# up the daemon (Vortex-style). CLI-style invocations forward to the sibling
+# `concierge-cli` (see main.rs), so `concierge eval` in old agent profiles
+# still behaves as the CLI.
+[[bin]]
+name = "concierge"
+path = "src/main.rs"
+
 [dependencies]
 concierge-platform = { path = "../concierge-platform" }
 concierge-ui = { path = "../concierge-ui" }
@@ -19,7 +27,13 @@ eframe = { version = "0.31", features = ["wgpu"] }
 vt100 = "0.15"
 serde_json = "1.0.150"
 env_logger = "0.11"
-concierge-db = { version = "0.11.7", path = "../concierge-db" }
+concierge-db = { version = "0.12.0", path = "../concierge-db" }
+
+# The in-app tray (Vortex model: the app owns window, tray, and queue) — same
+# crate/version and OS gate as the daemon's legacy tray; eframe's winit loop is
+# the OS message pump it needs.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tray-icon = "0.19"
 
 # The embedded terminal's PTY backend. portable-pty's ConPTY delivers no child
 # output on Windows (verified in CI), so use the dedicated `conpty` crate there.

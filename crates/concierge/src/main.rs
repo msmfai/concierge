@@ -17,7 +17,7 @@ use concierge::{nexus, Error};
 
 #[derive(Parser)]
 #[command(
-    name = "concierge",
+    name = "concierge-cli",
     version,
     about = "Declarative mod management — eval a pure plan, realize it into the game instance"
 )]
@@ -169,7 +169,7 @@ enum Cmd {
     },
     /// Pipeline state per mod
     Status,
-    /// Launch the game from the instance (reverse with `concierge deactivate`)
+    /// Launch the game from the instance (reverse with `concierge-cli deactivate`)
     Launch {
         /// Don't launch — report launch-health (script-extender log + platform
         /// warnings) and pristine-safety instead
@@ -528,7 +528,7 @@ fn run() -> Result<()> {
             list.name,
             list.archives.len()
         );
-        println!("  test case edit pristine/instance paths, then `concierge eval` it");
+        println!("  test case edit pristine/instance paths, then `concierge-cli eval` it");
         return Ok(());
     }
     // The headless agent view boots its own model — early-return like `init`.
@@ -559,7 +559,7 @@ fn run() -> Result<()> {
             let n = unaudited(&repo, &manifest);
             if n > 0 {
                 println!(
-                    "  audit     {n} Nexus entr{} unaudited — run `concierge audit`",
+                    "  audit     {n} Nexus entr{} unaudited — run `concierge-cli audit`",
                     if n == 1 { "y" } else { "ies" }
                 );
             }
@@ -638,7 +638,7 @@ fn run() -> Result<()> {
             let path = repo.catalog_path();
             if !path.exists() {
                 return Err(Error::Other(format!(
-                    "no catalog at {} — sync it first: `concierge db sync {domain}`",
+                    "no catalog at {} — sync it first: `concierge-cli db sync {domain}`",
                     path.display()
                 )));
             }
@@ -701,7 +701,7 @@ fn run() -> Result<()> {
             if bad > 0 {
                 return Err(Error::Other(format!(
                     "{bad} unverified id(s) — fix the manifest (search the catalog: \
-                     `concierge ai --catalog \"<name>\"`) and re-audit"
+                     `concierge-cli ai --catalog \"<name>\"`) and re-audit"
                 )));
             }
         }
@@ -719,13 +719,14 @@ fn run() -> Result<()> {
         Cmd::Realize { fresh, sort } => {
             if concierge::profiles::is_locked(&repo.profile) {
                 return Err(Error::Other(
-                    "profile is LOCKED (declaration read-only) — `concierge unlock` first".into(),
+                    "profile is LOCKED (declaration read-only) — `concierge-cli unlock` first"
+                        .into(),
                 ));
             }
             let n = unaudited(&repo, &manifest);
             if n > 0 {
                 eprintln!(
-                    "  ⚠ {n} Nexus entr{} never audited — `concierge audit` verifies the ids",
+                    "  ⚠ {n} Nexus entr{} never audited — `concierge-cli audit` verifies the ids",
                     if n == 1 { "y" } else { "ies" }
                 );
             }
@@ -1054,7 +1055,7 @@ fn run() -> Result<()> {
                 results.push((
                     PASS,
                     "pristine safe",
-                    "no vanilla inventory (run `concierge inventory` to enable this check)"
+                    "no vanilla inventory (run `concierge-cli inventory` to enable this check)"
                         .to_owned(),
                 ));
             }
@@ -1253,7 +1254,7 @@ fn run() -> Result<()> {
                 .symlink_metadata()
                 .is_ok_and(|m| m.file_type().is_symlink())
             {
-                println!("  [WARN] pristine is currently activated (a launch is live) — `concierge deactivate` to restore it");
+                println!("  [WARN] pristine is currently activated (a launch is live) — `concierge-cli deactivate` to restore it");
             } else if repo.vanilla_inventory().exists() {
                 let pd = check(&repo, &plan, true)?
                     .iter()
@@ -1274,7 +1275,7 @@ fn run() -> Result<()> {
                     }
                 );
             } else {
-                println!("  [PASS] pristine in place (real dir; run `concierge inventory` for a deep check)");
+                println!("  [PASS] pristine in place (real dir; run `concierge-cli inventory` for a deep check)");
             }
         }
         Cmd::Launch { check: false } => {
@@ -1972,7 +1973,7 @@ fn run() -> Result<()> {
             let src = repo.profile.join("manifest.toml");
             std::fs::copy(&src, &dest).map_err(|e| Error::Other(format!("copy: {e}")))?;
             println!("  exported pack recipe -> {dest}");
-            println!("  share it; the recipient runs `concierge import-pack {dest} <name>`");
+            println!("  share it; the recipient runs `concierge-cli import-pack {dest} <name>`");
         }
         Cmd::ImportPack { src, profile } => {
             let shared = std::fs::read_to_string(&src)
@@ -2030,7 +2031,7 @@ fn run() -> Result<()> {
                 println!("    nexus_file_id = {}", f.file_id);
                 println!("    file = \"{}\"", f.file_name);
                 println!(
-                    "  -> set those on the [[mod]] entry, then `concierge fetch` downloads + pins md5"
+                    "  -> set those on the [[mod]] entry, then `concierge-cli fetch` downloads + pins md5"
                 );
             }
             NexusCmd::Tracked => {

@@ -593,7 +593,7 @@ fn fomod_desired(want: &mut WantSet, build: &Path, m: &crate::plan::PlannedMod) 
     if let Some(bad) = select.iter().find(|s| !known.contains(s.as_str())) {
         return Err(Error::Other(format!(
             "{}: [mod.fomod] selects \"{bad}\" but the installer has no such option \
-             (run `concierge fomod {}` to list them)",
+             (run `concierge-cli fomod {}` to list them)",
             m.name, m.name
         )));
     }
@@ -709,7 +709,7 @@ fn ci_join(root: &Path, rel: &str) -> Option<PathBuf> {
 }
 
 /// Parse a mod's FOMOD `ModuleConfig.xml` from its built tree, if it has one.
-/// Powers `concierge fomod <mod>` inspection and select validation. `None` when
+/// Powers `concierge-cli fomod <mod>` inspection and select validation. `None` when
 /// the mod isn't built or isn't a FOMOD.
 pub fn mod_fomod_config(
     repo: &Repo,

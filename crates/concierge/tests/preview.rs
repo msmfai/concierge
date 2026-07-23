@@ -1,4 +1,4 @@
-//! `concierge preview` shows what realize WOULD deploy (files + activations)
+//! `concierge-cli preview` shows what realize WOULD deploy (files + activations)
 //! without touching the instance, and its file set matches the real deploy.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -56,7 +56,7 @@ fn preview_matches_deploy_and_touches_nothing() {
     .unwrap();
 
     let run = |arg: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_concierge"))
+        Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
             .args(arg)
             .env("CONCIERGE_REPO", &profile)
             .output()

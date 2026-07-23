@@ -1,6 +1,9 @@
-//! Concierge download daemon binary — a windowless background process that owns
-//! the download manager and serves it over a local socket. Launched on demand by
-//! the GUI (spawn-or-connect); keeps running after the GUI quits.
+//! Concierge download daemon binary — LEGACY/COMPAT. The GUI now hosts the
+//! download service and tray in-process (the Vortex model: one process owns
+//! window, tray, queue, and socket; quitting it stops everything). This binary
+//! remains for old nxm:// registrations that still point at it (its handoff
+//! queues the url and launches/raises the app) and as a headless service if
+//! run by hand.
 
 // No console/window on Windows: this is a background service, not a terminal
 // app. Keep the console in debug so `cargo run -p concierge-daemon` shows stderr.

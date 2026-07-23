@@ -76,7 +76,7 @@ pub fn kind_of(game_dir: &Path) -> Option<String> {
 
 /// Run the real binary against a profile; returns (success, stdout+stderr).
 pub fn concierge(profile: &Path, args: &[&str], stdin: Option<&str>) -> (bool, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_concierge"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_concierge-cli"));
     cmd.args(args).env("CONCIERGE_REPO", profile);
     let out = if let Some(input) = stdin {
         use std::io::Write as _;

@@ -1,8 +1,10 @@
 //! The daemon's system-tray / menu-bar icon and the OS event loop that hosts it.
 //!
-//! The tray lives in the daemon (the always-on process) so it's present whenever
-//! Concierge is running, even with the GUI window closed — the persistent,
-//! Vortex-style presence. Hosting a status item (macOS) / notification-area icon
+//! LEGACY PATH: the GUI now owns the tray in-process (the Vortex model — one
+//! process holds window, tray, queue, and socket; see concierge-gui's tray
+//! module, which reuses [`make_icon`]). This tray only appears when the daemon
+//! binary runs standalone — e.g. an old nxm:// registration started it before
+//! the GUI was up. Hosting a status item (macOS) / notification-area icon
 //! (Windows) needs an OS message pump on the main thread, which winit provides
 //! safely; the socket server runs on a background thread (see `run_service`).
 //!
@@ -149,7 +151,9 @@ pub fn run() {
 
 /// A simple 32×32 filled-circle icon in the brand accent (no image asset; strict
 /// lints ⇒ no `as`/indexing, `u16` coords so `f32::from` applies).
-fn make_icon() -> Option<Icon> {
+/// The Concierge tray dot — shared with the GUI's in-process tray.
+#[must_use]
+pub fn make_icon() -> Option<Icon> {
     const S: u16 = 32;
     let (cx, cy, r) = (15.5_f32, 15.5_f32, 14.0_f32);
     let mut rgba: Vec<u8> = Vec::with_capacity(4096);

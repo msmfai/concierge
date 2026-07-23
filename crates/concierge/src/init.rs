@@ -1,4 +1,4 @@
-//! `concierge init` — scaffold an agent-ready profile folder.
+//! `concierge-cli init` — scaffold an agent-ready profile folder.
 //!
 //! Lays down the config (TOML or the Nix front-end), a per-profile **sandbox**
 //! layout (its own My Games / Saves / plugins.txt — nothing shared), a
@@ -67,13 +67,13 @@ pub fn init(dir: &Path, game: &str, nix: bool) -> Result<()> {
     if !created_config {
         println!("  note      config already existed; left it untouched");
     }
-    println!("  next      edit the config's pristine/instance paths, then: concierge eval");
+    println!("  next      edit the config's pristine/instance paths, then: concierge-cli eval");
     Ok(())
 }
 
 fn toml_template(game: &str) -> String {
     format!(
-        r#"# Concierge modpack — {game}. Edit the paths, then `concierge eval`.
+        r#"# Concierge modpack — {game}. Edit the paths, then `concierge-cli eval`.
 [game]
 kind = "{game}"
 # PRISTINE is never written. INSTANCE is the CoW clone the game runs from.
@@ -86,7 +86,7 @@ plugins_txt = "./sandbox/AppData/plugins.txt"
 my_games = "./sandbox/MyGames"
 
 # To fully isolate INIs + saves like an MO2 profile, set the game's REAL My
-# Games path here; `concierge sandbox` (and launch) will symlink it to this
+# Games path here; `concierge-cli sandbox` (and launch) will symlink it to this
 # profile's sandbox/MyGames (parking + restoring your real Documents):
 # [game.paths]
 # canonical_my_games = "/Users/you/Documents/My Games/Fallout4"

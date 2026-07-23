@@ -1,5 +1,5 @@
 //! Embedded PTY terminal: the agent view IS a terminal running the user's
-//! real interactive agent inside the `concierge shell` sandbox. The session
+//! real interactive agent inside the `concierge-cli shell` sandbox. The session
 //! logic here is deliberately egui-INDEPENDENT and unit-testable — spawn a
 //! command in a PTY, pump its output through a vt100 parser, expose the screen
 //! grid and an input sink. `main.rs` renders that grid and forwards

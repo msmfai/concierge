@@ -60,7 +60,11 @@ jobs:
         run: |
           name="concierge-${{ steps.tag.outputs.tag }}-${{ matrix.label }}"
           mkdir "$name"
-          cp target/release/concierge target/release/concierge-gui target/release/concierge-daemon LICENSE README.md "$name"/
+          # `concierge` IS the GUI (users run just this); `concierge-cli` is the
+          # agent CLI. A `concierge-gui` copy of the GUI stays in the archive so
+          # pre-rename installs (whose updater requires that name) can update in.
+          cp target/release/concierge target/release/concierge-cli target/release/concierge-daemon LICENSE README.md "$name"/
+          cp target/release/concierge "$name"/concierge-gui
           tar -czf "$name.tar.gz" "$name"
       - name: Package (windows)
         if: matrix.archive == 'zip'
@@ -68,7 +72,10 @@ jobs:
         run: |
           $name = "concierge-${{ steps.tag.outputs.tag }}-${{ matrix.label }}"
           New-Item -ItemType Directory -Path $name | Out-Null
-          Copy-Item target/release/concierge.exe, target/release/concierge-gui.exe, target/release/concierge-daemon.exe, LICENSE, README.md $name/
+          # concierge.exe IS the GUI; concierge-cli.exe is the agent CLI. The
+          # concierge-gui.exe copy keeps pre-rename installs updatable.
+          Copy-Item target/release/concierge.exe, target/release/concierge-cli.exe, target/release/concierge-daemon.exe, LICENSE, README.md $name/
+          Copy-Item target/release/concierge.exe $name/concierge-gui.exe
           Compress-Archive -Path $name -DestinationPath "$name.zip"
       - name: Upload to release
         shell: bash

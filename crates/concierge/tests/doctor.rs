@@ -1,5 +1,5 @@
-//! `concierge doctor` aggregates the health checks (all-green on a clean pack,
-//! nonzero exit on a problem), and `concierge plugins` reports active vs inert.
+//! `concierge-cli doctor` aggregates the health checks (all-green on a clean pack,
+//! nonzero exit on a problem), and `concierge-cli plugins` reports active vs inert.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -59,7 +59,7 @@ fn doctor_is_green_and_plugins_reports_active_vs_inert() {
     std::fs::write(profile.join("manifest.toml"), &manifest).unwrap();
 
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_concierge"))
+        Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
             .args(args)
             .env("CONCIERGE_REPO", &profile)
             .output()

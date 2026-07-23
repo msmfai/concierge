@@ -1,4 +1,4 @@
-//! `concierge adopt` — the automation surface for setting up games concierge
+//! `concierge-cli adopt` — the automation surface for setting up games concierge
 //! doesn't know (the GUI wizard's CLI twin, usable by agents). Hermetic: runs
 //! the real binary against a temp workspace + fake install; no real game, no
 //! network, no gate env var.
@@ -26,7 +26,7 @@ fn ws() -> PathBuf {
 }
 
 fn adopt(ws: &Path, args: &[&str]) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_concierge"))
+    let out = Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
         .arg("adopt")
         .args(args)
         .env("CONCIERGE_REPO", ws)
@@ -114,7 +114,7 @@ fn adopt_scaffolds_generic_and_custom_games() {
         profile.join(".claude/commands/audit-ids.md").exists(),
         "commands provisioned"
     );
-    let help = Command::new(env!("CARGO_BIN_EXE_concierge"))
+    let help = Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
         .arg("--help")
         .output()
         .expect("run --help");
@@ -137,7 +137,7 @@ fn adopt_scaffolds_generic_and_custom_games() {
         "nexus",
     ] {
         assert!(
-            guide.contains(&format!("concierge {cmd}")),
+            guide.contains(&format!("concierge-cli {cmd}")),
             "guide teaches {cmd}"
         );
         assert!(

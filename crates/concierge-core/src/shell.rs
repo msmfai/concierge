@@ -180,17 +180,24 @@ pub fn shell_command(
         .env("CONCIERGE_REPO", &repo.profile)
         .env("CONCIERGE_SANDBOX", "1")
         .env("CONCIERGE_MOTD", sandbox_motd());
-    // Make `concierge` itself runnable inside the sandbox: the CLAUDE.md tells the
-    // agent to run `concierge eval/fetch/realize/...`, and the binary ships beside
-    // the running exe (GUI: next to concierge-gui; CLI: is the running exe). A
-    // portable install (Windows zip) isn't on PATH otherwise, so prepend its dir.
+    // Make the CLI runnable inside the sandbox: the CLAUDE.md tells the agent
+    // to run `concierge-cli eval/fetch/realize/...`, and the binary ships
+    // beside the running exe (GUI or CLI — same directory either way). A
+    // portable install (Windows zip) isn't on PATH otherwise, so prepend its
+    // dir. A shim dir goes in front of THAT: profiles provisioned before the
+    // GUI took the `concierge` name still say `concierge eval` — the shim
+    // keeps the bare name meaning the CLI here, not a GUI window.
     if let Some(dir) = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
     {
         let sep = if cfg!(windows) { ';' } else { ':' };
         let path = std::env::var("PATH").unwrap_or_default();
-        c.env("PATH", format!("{}{sep}{path}", dir.display()));
+        let front = cli_shim_dir(&dir).map_or_else(
+            || dir.display().to_string(),
+            |shim| format!("{}{sep}{}", shim.display(), dir.display()),
+        );
+        c.env("PATH", format!("{front}{sep}{path}"));
     }
     for (k, v) in extra_env {
         c.env(k, v);
@@ -281,6 +288,49 @@ fn interactive_shell() -> (Vec<String>, Vec<(String, String)>) {
     (Vec::new(), Vec::new())
 }
 
+/// A directory whose `concierge` entry runs the sibling `concierge-cli` —
+/// prepended to the sandbox PATH so profiles that predate the GUI taking the
+/// `concierge` name still get the CLI (not a GUI window) from `concierge eval`.
+/// Written under the config dir by the (unsandboxed) parent before the shell
+/// starts; `None` when the CLI isn't beside the running exe or a write fails,
+/// in which case the exe dir alone is prepended as before.
+fn cli_shim_dir(exe_dir: &Path) -> Option<PathBuf> {
+    cli_shim_dir_at(exe_dir, &concierge_platform::config_dir().join("cli-shim"))
+}
+
+/// [`cli_shim_dir`] with an explicit shim location (unit-testable).
+fn cli_shim_dir_at(exe_dir: &Path, dir: &Path) -> Option<PathBuf> {
+    let cli = exe_dir.join(if cfg!(windows) {
+        "concierge-cli.exe"
+    } else {
+        "concierge-cli"
+    });
+    if !cli.exists() {
+        return None;
+    }
+    std::fs::create_dir_all(dir).ok()?;
+    if cfg!(windows) {
+        // cmd/powershell resolve a bare `concierge` to concierge.cmd here (the
+        // first PATH dir wins); the sh-style shim beside it serves bash-alikes.
+        let body = format!("@echo off\r\n\"{}\" %*\r\n", cli.display());
+        std::fs::write(dir.join("concierge.cmd"), body).ok()?;
+    }
+    write_sh_shim(&dir.join("concierge"), &cli)?;
+    Some(dir.to_path_buf())
+}
+
+/// Write a `#!/bin/sh` exec-shim at `path` pointing at `cli`, made executable.
+fn write_sh_shim(path: &Path, cli: &Path) -> Option<()> {
+    let body = format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", cli.display());
+    std::fs::write(path, body).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).ok()?;
+    }
+    Some(())
+}
+
 /// The greeting an interactive sandboxed shell prints on start — what the
 /// sandbox is, and that you can run your own AI assistant inside it. Kept
 /// plain-ASCII-safe so it renders in any terminal.
@@ -298,8 +348,8 @@ fn sandbox_motd() -> String {
   Whichever you have installed — start it and it builds the pack for
   you, confined to this modpack. The profile carries CLAUDE.md and
   AGENTS.md plus the slash-commands /health /curate /sort /conflicts
-  /audit-ids, so any agent already knows the tools. The `concierge`
-  CLI is on PATH here (eval / fetch / realize / check …) and
+  /audit-ids, so any agent already knows the tools. The `concierge-cli`
+  tool is on PATH here (eval / fetch / realize / check …) and
   CONCIERGE_REPO points at this profile. Type 'exit' to leave.
 ========================================================================
 "
@@ -614,11 +664,57 @@ mod tests {
         );
     }
 
+    /// The sandbox shim keeps legacy `concierge <cmd>` meaning the CLI: with a
+    /// `concierge-cli` beside the exe, a shim dir is produced whose `concierge`
+    /// entry execs that CLI; without one, no shim (the exe dir alone is used).
+    #[test]
+    fn cli_shim_points_a_bare_concierge_at_the_cli() {
+        let base = std::env::temp_dir().join(format!("concierge-shim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let exe_dir = base.join("bin");
+        let shim_root = base.join("cli-shim");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+
+        // No concierge-cli beside the exe -> no shim.
+        assert!(cli_shim_dir_at(&exe_dir, &shim_root).is_none());
+
+        let cli_name = if cfg!(windows) {
+            "concierge-cli.exe"
+        } else {
+            "concierge-cli"
+        };
+        let cli = exe_dir.join(cli_name);
+        std::fs::write(&cli, b"x").unwrap();
+        let dir = cli_shim_dir_at(&exe_dir, &shim_root).unwrap();
+        assert_eq!(dir, shim_root);
+
+        let sh = std::fs::read_to_string(dir.join("concierge")).unwrap();
+        assert!(
+            sh.contains("exec") && sh.contains(&cli.display().to_string()),
+            "sh shim execs the CLI: {sh}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(dir.join("concierge"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert!(mode & 0o111 != 0, "shim is executable: mode {mode:o}");
+        }
+        #[cfg(windows)]
+        {
+            let cmd = std::fs::read_to_string(dir.join("concierge.cmd")).unwrap();
+            assert!(cmd.contains(&cli.display().to_string()), "cmd shim: {cmd}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn shell_puts_the_concierge_binary_dir_on_path() {
-        // The agent is told to run `concierge eval/fetch/...`; the binary ships
-        // beside the running exe, so its dir must be prepended to PATH — else on a
-        // portable install the agent can't find it and hunts for the exe.
+        // The agent is told to run `concierge-cli eval/fetch/...`; the binary
+        // ships beside the running exe, so its dir must be prepended to PATH —
+        // else on a portable install the agent can't find it and hunts for it.
         let (repo, plan) = fixture();
         let c = shell_command(&repo, &plan, None, false, &[], &[]).unwrap();
         let path = c
