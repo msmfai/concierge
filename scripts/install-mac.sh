@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Install Concierge on macOS: build release, bundle the GUI as a launchable
-# Concierge.app in ~/Applications (Spotlight/Launchpad), and put the `concierge`
-# CLI on PATH. Re-runnable -- this IS the build+deploy step; run it after changes
-# instead of `cargo run`.
+# Concierge.app in ~/Applications (Spotlight/Launchpad), and put the
+# `concierge-cli` agent CLI on PATH. Re-runnable -- this IS the build+deploy
+# step; run it after changes instead of `cargo run`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="${PWD}"
@@ -15,15 +15,22 @@ cargo build --release -p concierge-gui -p concierge -p concierge-daemon
 echo "==> bundling ${APP}"
 rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
-cp target/release/concierge-gui "${APP}/Contents/MacOS/concierge-gui"
+# The GUI binary is `concierge` now (bare launch = GUI + daemon, Vortex-style).
+# Inside the bundle it keeps the `concierge-gui` name: the launcher script below
+# is `Concierge`, and on a case-insensitive filesystem (macOS default) a sibling
+# named `concierge` would BE the same file.
+cp target/release/concierge "${APP}/Contents/MacOS/concierge-gui"
+# The agent CLI rides in the bundle so the GUI's forwarding + sandbox shim and
+# the daemon all find it beside the running exe.
+cp target/release/concierge-cli "${APP}/Contents/MacOS/concierge-cli"
 # The background download daemon lives beside the GUI so spawn-or-connect finds
 # it (concierge_daemon::daemon_exe looks next to the running executable).
 cp target/release/concierge-daemon "${APP}/Contents/MacOS/concierge-daemon"
 
 # A Finder-launched .app gets a bare PATH and no repo context. The bundle's
 # executable is a wrapper that sets CONCIERGE_REPO (so it finds games/) and a
-# real PATH (so the AI panel's `claude` + the `concierge` CLI resolve), then
-# execs the actual GUI binary.
+# real PATH (so the AI panel's `claude` + the `concierge-cli` tool resolve),
+# then execs the actual GUI binary.
 cat > "${APP}/Contents/MacOS/Concierge" <<WRAP
 #!/bin/bash
 export CONCIERGE_REPO="${REPO}"
@@ -53,9 +60,9 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
-echo "==> installing concierge CLI to ~/.cargo/bin"
+echo "==> installing concierge-cli to ~/.cargo/bin"
 mkdir -p "${HOME}/.cargo/bin"
-cp target/release/concierge "${HOME}/.cargo/bin/concierge"
+cp target/release/concierge-cli "${HOME}/.cargo/bin/concierge-cli"
 
 # Concierge discovers helper binaries at runtime via concierge-platform::find_tool
 # (PATH / next-to-app / ~/.cargo/bin), NOT via Nix. Make sure the two it needs
@@ -88,4 +95,4 @@ codesign --force --deep --sign - "${APP}" >/dev/null 2>&1 || true
 echo "OK: Concierge installed"
 echo "    app: ${APP}"
 echo "         launch from Spotlight/Launchpad, or:  open \"${APP}\""
-echo "    cli: ~/.cargo/bin/concierge   (CONCIERGE_REPO=${REPO} baked into the app)"
+echo "    cli: ~/.cargo/bin/concierge-cli   (CONCIERGE_REPO=${REPO} baked into the app)"

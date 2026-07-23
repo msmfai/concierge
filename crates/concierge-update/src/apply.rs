@@ -90,16 +90,33 @@ pub fn apply_staged(staged: &StagedUpdate, install_dir: &Path) -> Result<PathBuf
     if !status.success() {
         return Err(Error::Io(format!("tar extract failed ({status})")));
     }
-    let (gui, cli) = (exe_name("concierge-gui"), exe_name("concierge"));
+    let (gui, cli, new_layout) = archive_names(&tmp);
     let new_gui =
         find_file(&tmp, &gui).ok_or_else(|| Error::Verify(format!("{gui} not in archive")))?;
-    swap_in(&new_gui, &install_dir.join(&gui))?;
+    // Where the GUI lands. Inside the macOS .app the launcher script owns the
+    // `Concierge` name, which on a case-insensitive filesystem (macOS default)
+    // IS `concierge` — swapping there would clobber the launcher. So on macOS
+    // the GUI keeps its bundle-internal `concierge-gui` name; elsewhere the
+    // GUI is `concierge`, with the legacy `concierge-gui` name also refreshed
+    // so pre-rename shortcuts/wrappers keep launching the current build.
+    let gui_target = if new_layout && cfg!(target_os = "macos") {
+        exe_name("concierge-gui")
+    } else {
+        gui
+    };
+    swap_in(&new_gui, &install_dir.join(&gui_target))?;
+    if new_layout && !cfg!(target_os = "macos") {
+        let legacy = install_dir.join(exe_name("concierge-gui"));
+        if legacy.exists() {
+            let _ = swap_in(&new_gui, &legacy);
+        }
+    }
     if let Some(new_cli) = find_file(&tmp, &cli) {
         // best-effort: the CLI sometimes isn't beside the GUI (e.g. macOS .app)
         let _ = swap_in(&new_cli, &install_dir.join(&cli));
     }
     let _ = std::fs::remove_dir_all(&tmp);
-    Ok(install_dir.join(&gui))
+    Ok(install_dir.join(&gui_target))
 }
 
 /// Rename the live binary aside and drop the new one at its path.
@@ -121,7 +138,11 @@ fn swap_in(new_bin: &Path, target: &Path) -> Result<()> {
 
 /// Sweep `.old-pending` binaries left by a prior swap. Call once at startup.
 pub fn cleanup_old(install_dir: &Path) {
-    for name in [exe_name("concierge-gui"), exe_name("concierge")] {
+    for name in [
+        exe_name("concierge"),
+        exe_name("concierge-cli"),
+        exe_name("concierge-gui"),
+    ] {
         let aside = install_dir.join(&name).with_extension("old-pending");
         let _ = std::fs::remove_file(aside);
     }
@@ -131,6 +152,19 @@ pub fn cleanup_old(install_dir: &Path) {
 /// image. Best-effort — a failure just means the user relaunches manually.
 pub fn relaunch(exe: &Path) {
     let _ = std::process::Command::new(exe).spawn();
+}
+
+/// The (GUI, CLI, is-current-layout) binary names for an extracted archive
+/// tree. Two layouts exist. Current: the GUI ships as `concierge` (the
+/// user-facing exe) with the agent CLI as `concierge-cli` — that sibling is
+/// the discriminator. Legacy: the GUI was `concierge-gui` and the CLI held
+/// the `concierge` name.
+fn archive_names(tmp: &Path) -> (String, String, bool) {
+    if find_file(tmp, &exe_name("concierge-cli")).is_some() {
+        (exe_name("concierge"), exe_name("concierge-cli"), true)
+    } else {
+        (exe_name("concierge-gui"), exe_name("concierge"), false)
+    }
 }
 
 fn exe_name(stem: &str) -> String {
@@ -193,6 +227,103 @@ mod tests {
         assert!(target.with_extension("old-pending").exists());
         cleanup_old(&dir);
         assert!(!target.with_extension("old-pending").exists());
+    }
+
+    /// End-to-end transition: a current-layout archive (concierge = GUI,
+    /// concierge-cli, plus the concierge-gui compat copy) applied onto a
+    /// PRE-RENAME install (concierge = old CLI, concierge-gui = old GUI).
+    /// The GUI must land under the new name (except inside the macOS .app,
+    /// where the launcher script owns `concierge` case-insensitively), the
+    /// legacy `concierge-gui` name must keep launching the current build, the
+    /// CLI must appear as `concierge-cli`, and the daemon must be untouched.
+    #[test]
+    fn apply_staged_swaps_a_new_layout_archive_into_a_pre_rename_install() {
+        let base = std::env::temp_dir().join(format!("cg-apply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let pkg = base.join("concierge-v9.9.9-test");
+        let install = base.join("install");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        for (name, body) in [
+            ("concierge", &b"NEWGUI"[..]),
+            ("concierge-gui", b"NEWGUI"),
+            ("concierge-cli", b"NEWCLI"),
+        ] {
+            std::fs::write(pkg.join(exe_name(name)), body).unwrap();
+        }
+        let archive = base.join("update.tar.gz");
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("concierge-v9.9.9-test")
+            .current_dir(&base)
+            .status()
+            .unwrap();
+        assert!(status.success(), "tar failed");
+        for (name, body) in [
+            ("concierge", &b"OLDCLI"[..]),
+            ("concierge-gui", b"OLDGUI"),
+            ("concierge-daemon", b"OLDDAEMON"),
+        ] {
+            std::fs::write(install.join(exe_name(name)), body).unwrap();
+        }
+
+        let staged = StagedUpdate {
+            archive,
+            tag: "v9.9.9-test".to_owned(),
+            sha256: String::new(),
+        };
+        let relaunch = apply_staged(&staged, &install).unwrap();
+
+        let read = |name: &str| std::fs::read(install.join(exe_name(name))).unwrap();
+        if cfg!(target_os = "macos") {
+            // .app internals: the GUI keeps the bundle name; `concierge` (the
+            // launcher's name, case-insensitively) is deliberately untouched.
+            assert_eq!(relaunch, install.join(exe_name("concierge-gui")));
+            assert_eq!(read("concierge"), b"OLDCLI");
+        } else {
+            assert_eq!(relaunch, install.join(exe_name("concierge")));
+            assert_eq!(read("concierge"), b"NEWGUI");
+        }
+        assert_eq!(read("concierge-gui"), b"NEWGUI", "legacy name refreshed");
+        assert_eq!(read("concierge-cli"), b"NEWCLI", "agent CLI installed");
+        assert_eq!(
+            read("concierge-daemon"),
+            b"OLDDAEMON",
+            "daemon not the updater's job"
+        );
+        // The swap left .old-pending copies behind; startup cleanup sweeps them.
+        cleanup_old(&install);
+        for name in ["concierge", "concierge-cli", "concierge-gui"] {
+            assert!(
+                !install
+                    .join(exe_name(name))
+                    .with_extension("old-pending")
+                    .exists(),
+                "{name} old-pending swept"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn archive_layout_is_detected_by_the_cli_sibling() {
+        let dir = std::env::temp_dir().join(format!("cg-layout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Legacy archive: concierge-gui + concierge (the old CLI).
+        std::fs::write(dir.join(exe_name("concierge-gui")), b"g").unwrap();
+        std::fs::write(dir.join(exe_name("concierge")), b"c").unwrap();
+        assert_eq!(
+            archive_names(&dir),
+            (exe_name("concierge-gui"), exe_name("concierge"), false)
+        );
+        // Current archive: concierge (the GUI) + concierge-cli.
+        std::fs::write(dir.join(exe_name("concierge-cli")), b"c").unwrap();
+        assert_eq!(
+            archive_names(&dir),
+            (exe_name("concierge"), exe_name("concierge-cli"), true)
+        );
     }
 
     #[test]

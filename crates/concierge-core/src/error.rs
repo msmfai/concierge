@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("no Concierge profile found from {0}. Open the Concierge app and use \"+ add game\", or run `concierge init <game>` in a workspace, or set CONCIERGE_REPO to a profile directory.")]
+    #[error("no Concierge profile found from {0}. Open the Concierge app and use \"+ add game\", or run `concierge-cli init <game>` in a workspace, or set CONCIERGE_REPO to a profile directory.")]
     RepoNotFound(PathBuf),
     #[error("io: {path}: {source}")]
     Io {
@@ -16,7 +16,7 @@ pub enum Error {
     ManifestParse(#[from] toml::de::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("mod '{name}': archive not pinned (md5 empty) — run `concierge fetch` and pin the printed hash")]
+    #[error("mod '{name}': archive not pinned (md5 empty) — run `concierge-cli fetch` and pin the printed hash")]
     Unpinned { name: String },
     #[error("mod '{name}': hash mismatch: expected {expected}, got {got}")]
     HashMismatch {
@@ -36,7 +36,7 @@ pub enum Error {
     Extract { archive: PathBuf, stderr: String },
     #[error("instance path {0} refused: not a concierge-owned path")]
     UnsafeInstancePath(PathBuf),
-    #[error("instance not materialized — run `concierge realize` first")]
+    #[error("instance not materialized — run `concierge-cli realize` first")]
     NoInstance,
     #[error("{0}")]
     Other(String),

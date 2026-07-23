@@ -6,7 +6,9 @@ license.workspace = true
 description = "Concierge CLI — the binary wiring core + per-game accelerator crates + the metadata store."
 
 [[bin]]
-name = "concierge"
+# The agent-facing CLI. The user-facing `concierge` binary is the GUI
+# (crates/concierge-gui), which forwards CLI-style invocations here.
+name = "concierge-cli"
 path = "src/main.rs"
 
 [features]

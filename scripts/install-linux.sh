@@ -8,21 +8,26 @@ REPO="${PWD}"
 BINDIR="${HOME}/.local/bin"
 APPS="${XDG_DATA_HOME:-${HOME}/.local/share}/applications"
 
-echo "==> building release (gui + cli)"
-cargo build --release -p concierge-gui -p concierge
+echo "==> building release (gui + cli + daemon)"
+cargo build --release -p concierge-gui -p concierge -p concierge-daemon
 
 echo "==> installing binaries to ${BINDIR}"
 mkdir -p "${BINDIR}" "${APPS}"
-cp target/release/concierge "${BINDIR}/concierge"
+# concierge-cli is the agent CLI; `concierge` (the GUI, below) is what users run.
+cp target/release/concierge-cli "${BINDIR}/concierge-cli"
 
 # A menu-launched app has no repo cwd, so a tiny wrapper bakes CONCIERGE_REPO in.
 # (Tools are found by concierge-platform::find_tool via PATH — no PATH hack.)
-cat > "${BINDIR}/concierge-gui" <<WRAP
+# `concierge` IS the app now: bare launch opens the GUI + daemon (Vortex-style);
+# CLI-style args forward to concierge-cli.
+cat > "${BINDIR}/concierge" <<WRAP
 #!/usr/bin/env bash
 export CONCIERGE_REPO="${REPO}"
-exec "${REPO}/target/release/concierge-gui" "\$@"
+exec "${REPO}/target/release/concierge" "\$@"
 WRAP
-chmod +x "${BINDIR}/concierge-gui"
+chmod +x "${BINDIR}/concierge"
+# Pre-rename name; keep old muscle memory/menu entries working.
+ln -sf "${BINDIR}/concierge" "${BINDIR}/concierge-gui"
 
 # Helper binaries: Concierge discovers clickhouse/7zz on PATH (or ~/.local/bin).
 # Prefer a distro package; symlink whatever is found so find_tool locates it.
@@ -42,12 +47,12 @@ cat > "${APPS}/concierge.desktop" <<DESKTOP
 Type=Application
 Name=Concierge
 Comment=Declarative mod manager
-Exec=${BINDIR}/concierge-gui
+Exec=${BINDIR}/concierge
 Terminal=false
 Categories=Game;Utility;
 DESKTOP
 update-desktop-database "${APPS}" >/dev/null 2>&1 || true
 
 echo "OK: Concierge installed"
-echo "    launcher: ${BINDIR}/concierge-gui  (also in your app menu)"
-echo "    cli:      ${BINDIR}/concierge       (ensure ${BINDIR} is on PATH)"
+echo "    app: ${BINDIR}/concierge      (also in your app menu; GUI + daemon)"
+echo "    cli: ${BINDIR}/concierge-cli  (the agent CLI; ensure ${BINDIR} is on PATH)"

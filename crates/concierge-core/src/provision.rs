@@ -53,7 +53,7 @@ pub fn provision_profile(dir: &Path, kind: &str) -> Result<Vec<String>> {
 
 /// The per-profile agent guide. Precise about what each command does — an
 /// agent should never have to guess semantics (guessing is how "run
-/// `concierge check` to validate ids" happened).
+/// `concierge-cli check` to validate ids" happened).
 fn guide(kind: &str) -> String {
     let generic = generic_guide(kind);
     // Append this game's own modding norms, if its adapter offers them, so the
@@ -80,8 +80,8 @@ orientation, in your own words — do NOT dump this file. Cover:
 - **What Concierge is:** a declarative, sandboxed mod manager. This folder is a
   "modpack" — `manifest.toml` declares the mods; you build it into a disposable
   copy of the {kind} install. The player's real game is never modified.
-- **What you can do here:** curate and build the pack by running `concierge`
-  commands (`eval`, `fetch`, `realize`, `audit`, `sort`, `conflicts`) — they're
+- **What you can do here:** curate and build the pack by running `concierge-cli`
+  commands (`eval`, `fetch`, `realize`, `audit`, `sort`, `conflicts`) — it's
   on PATH in this shell.
 - **You're sandboxed:** everything you run is confined to this modpack; you
   cannot write to the pristine game or the rest of the machine, by design.
@@ -91,46 +91,46 @@ of this guide is your reference, not a script to recite.
 
 This folder IS the interface: `manifest.toml` is the single source of truth
 for the modded game. Run commands with this dir as CONCIERGE_REPO (it already
-is, inside `concierge shell`). The pristine game install is never written —
-mods realize into a disposable CoW instance; the OS sandbox (`concierge
+is, inside `concierge-cli shell`). The pristine game install is never written —
+mods realize into a disposable CoW instance; the OS sandbox (`concierge-cli
 shell`) enforces exactly that write-set.
 
 ## Command semantics (precise — don't guess)
-- `concierge eval` — manifest -> pure hashed Plan. Prints UNPINNED and
+- `concierge-cli eval` — manifest -> pure hashed Plan. Prints UNPINNED and
   unaudited counts. Read-only apart from state/plan.json.
-- `concierge fetch` — download declared archives into the shared store
+- `concierge-cli fetch` — download declared archives into the shared store
   (content-addressed); prints md5 pins to commit into the manifest.
-- `concierge realize` — fetch + build + deploy into the instance; runs the
+- `concierge-cli realize` — fetch + build + deploy into the instance; runs the
   game's invariant lints and REFUSES on violations. Not id validation.
-- `concierge check [--vanilla]` — DRIFT detection: deployed files vs recorded
+- `concierge-cli check [--vanilla]` — DRIFT detection: deployed files vs recorded
   state (+ pristine vs its inventory with --vanilla). It never contacts
   Nexus and cannot validate a mod id.
-- `concierge audit` — THE id validator: checks every `nexus_mod_id` against
+- `concierge-cli audit` — THE id validator: checks every `nexus_mod_id` against
   the synced catalog (OK / NAME MISMATCH / UNKNOWN ID), records
   state/audit.json, exits nonzero on any unverified id.
-- `concierge db sync <domain>` — populate the local catalog from Nexus's
+- `concierge-cli db sync <domain>` — populate the local catalog from Nexus's
   public GraphQL (state/catalog.sqlite). Needed once before audit/search.
-- `concierge ai --catalog "<query>"` — search that catalog (name,
+- `concierge-cli ai --catalog "<query>"` — search that catalog (name,
   endorsements, mod id). NEVER invent a mod or an id: search, or say so.
-- `concierge nexus resolve <mod_id>` — pick the mod's MAIN file: prints
+- `concierge-cli nexus resolve <mod_id>` — pick the mod's MAIN file: prints
   nexus_file_id + file for the manifest entry.
-- `concierge sort [--apply]` / `concierge conflicts [--assets]` /
-  `concierge reconcile` — load order, conflict matrix, deterministic merges.
-- `concierge inventory [--force]` — hash the pristine into the per-game
+- `concierge-cli sort [--apply]` / `concierge-cli conflicts [--assets]` /
+  `concierge-cli reconcile` — load order, conflict matrix, deterministic merges.
+- `concierge-cli inventory [--force]` — hash the pristine into the per-game
   vanilla baseline that `check --vanilla` verifies.
-- `concierge lock` / `unlock` — the declaration becomes read-only ON DISK
+- `concierge-cli lock` / `unlock` — the declaration becomes read-only ON DISK
   (chmod + immutable flag). While locked: explain and audit only; realize
   and every manifest write refuse. Never try to lift the lock yourself.
-- `concierge shell [--agent <cmd>]` — this sandbox. Writes outside the
+- `concierge-cli shell [--agent <cmd>]` — this sandbox. Writes outside the
   plan's write-set fail with EPERM; that is intended, not a bug to work
   around.
 
 ## Adding a mod (the only honest flow)
-1. Find it: `concierge ai --catalog "<query>"` (respect [curate] filters).
+1. Find it: `concierge-cli ai --catalog "<query>"` (respect [curate] filters).
 2. Add `[[mod]]`: name, version, nexus_mod_id from the catalog.
-3. Pin its file: `concierge nexus resolve <mod_id>` -> set nexus_file_id +
-   file. `concierge fetch` downloads and prints the md5 pin.
-4. `concierge audit` before anything is enabled for realize.
+3. Pin its file: `concierge-cli nexus resolve <mod_id>` -> set nexus_file_id +
+   file. `concierge-cli fetch` downloads and prints the md5 pin.
+4. `concierge-cli audit` before anything is enabled for realize.
 If a mod can't be resolved yet, PARK it: `enabled = false` with the
 nexus_mod_id — parse-valid, excluded from the plan, auditable. An enabled
 entry without a resolvable file does not eval.
@@ -144,11 +144,11 @@ pick from the avoid list.
 
 ## The reconciliation ladder (resolve at the lowest rung that works)
 0. Acquire — fetch mods (Nexus, http, or a git/http pipeline:
-   `concierge ai --propose-pipeline "<name>" --steps '<json>'`).
-1. Topology — load order (`concierge sort --apply`).
-2. Reconcile — deterministic merges (`concierge reconcile`).
+   `concierge-cli ai --propose-pipeline "<name>" --steps '<json>'`).
+1. Topology — load order (`concierge-cli sort --apply`).
+2. Reconcile — deterministic merges (`concierge-cli reconcile`).
 3. Synthesize — AI authors what the lower rungs refuse
-   (`concierge ai --resolve "<path>" --winner "<mod>"` — the core verifies).
+   (`concierge-cli ai --resolve "<path>" --winner "<mod>"` — the core verifies).
 Climb only on failure; the deterministic core is your oracle.
 
 ## Discipline
@@ -162,41 +162,41 @@ Climb only on failure; the deterministic core is your oracle.
 const SETTINGS: &str = r#"{
   "permissions": {
     "allow": [
-      "Bash(concierge eval*)",
-      "Bash(concierge status*)",
-      "Bash(concierge check*)",
-      "Bash(concierge audit*)",
-      "Bash(concierge conflicts*)",
-      "Bash(concierge sort)",
-      "Bash(concierge ai --catalog*)",
-      "Bash(concierge nexus resolve*)",
-      "Bash(concierge nexus files*)",
-      "Bash(concierge nexus tracked*)",
-      "Bash(concierge nexus updates*)",
-      "Bash(concierge db sync*)"
+      "Bash(concierge-cli eval*)",
+      "Bash(concierge-cli status*)",
+      "Bash(concierge-cli check*)",
+      "Bash(concierge-cli audit*)",
+      "Bash(concierge-cli conflicts*)",
+      "Bash(concierge-cli sort)",
+      "Bash(concierge-cli ai --catalog*)",
+      "Bash(concierge-cli nexus resolve*)",
+      "Bash(concierge-cli nexus files*)",
+      "Bash(concierge-cli nexus tracked*)",
+      "Bash(concierge-cli nexus updates*)",
+      "Bash(concierge-cli db sync*)"
     ]
   }
 }
 "#;
 
 const HEALTH: &str = r"Run the read-only health checks for this profile and give a short report:
-`concierge eval` (note UNPINNED / unaudited counts), `concierge check`
-(drift), `concierge audit` if a catalog exists, and the invariant lints
-(surfaced by `concierge realize` — do NOT realize just for lints; read the
+`concierge-cli eval` (note UNPINNED / unaudited counts), `concierge-cli check`
+(drift), `concierge-cli audit` if a catalog exists, and the invariant lints
+(surfaced by `concierge-cli realize` — do NOT realize just for lints; read the
 manifest and deployed state instead). Report: missing masters, plugin-limit,
 drift, unverified ids, and anything else that would break or crash the game.
 Keep every claim tied to command output.
 ";
 
-const SORT: &str = r"Sort this profile's load order (LOOT rules) with `concierge sort`, review the
-proposed order, then apply it with `concierge sort --apply` so the manifest's
+const SORT: &str = r"Sort this profile's load order (LOOT rules) with `concierge-cli sort`, review the
+proposed order, then apply it with `concierge-cli sort --apply` so the manifest's
 mod order matches. Summarize what moved and why.
 ";
 
-const CONFLICTS: &str = r"Run `concierge conflicts` (and `--assets` if useful) for this profile.
+const CONFLICTS: &str = r"Run `concierge-cli conflicts` (and `--assets` if useful) for this profile.
 Summarize which mods overwrite which records/files, which conflicts are
 dangerous, and how to resolve them — lowest rung first: load order
-(`concierge sort`), then deterministic merges (`concierge reconcile`), and
+(`concierge-cli sort`), then deterministic merges (`concierge-cli reconcile`), and
 only then AI-authored resolution.
 ";
 
@@ -209,17 +209,17 @@ a log line.
 const CURATE: &str = r"You are curating a modpack for this profile, conversationally, BEFORE anything
 is downloaded. Work in phases: (1) INTERVIEW — a few sharp questions about the
 playthrough (theme, difficulty, scope, must-haves, hard nos, hardware); listen,
-don't lecture. (2) RESEARCH — `concierge ai --catalog` for every candidate
-(sync first if empty: `concierge db sync <domain>`); NEVER invent a mod or an
-id. (3) ASSEMBLE — add chosen mods to manifest.toml, pinned via `concierge
+don't lecture. (2) RESEARCH — `concierge-cli ai --catalog` for every candidate
+(sync first if empty: `concierge-cli db sync <domain>`); NEVER invent a mod or an
+id. (3) ASSEMBLE — add chosen mods to manifest.toml, pinned via `concierge-cli
 nexus resolve` where possible, PARKED (`enabled = false`) where not; declare
-[relations] facts; fill [curate] with the brief. Finish with `concierge audit`
+[relations] facts; fill [curate] with the brief. Finish with `concierge-cli audit`
 and tell the user exactly what is verified and what is parked.
 ";
 
 const AUDIT_IDS: &str = r#"Verify every Nexus id in this manifest. If state/catalog.sqlite is missing,
-sync it first (`concierge db sync <domain>` — a few minutes). Run `concierge
-audit`; for each MISMATCH/UNKNOWN, find the real mod with `concierge ai
+sync it first (`concierge-cli db sync <domain>` — a few minutes). Run `concierge-cli
+audit`; for each MISMATCH/UNKNOWN, find the real mod with `concierge-cli ai
 --catalog "<name>"`, fix the manifest entry, and re-audit until clean. Never
 leave a wrong id in place, and never invent one.
 "#;

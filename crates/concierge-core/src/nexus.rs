@@ -73,7 +73,7 @@ pub struct Nxm {
 
 /// The nxm handoff inbox: a running Concierge polls this file and pins any
 /// `nxm://` links dropped in it. Lets a browser "Mod Manager Download" (or
-/// `concierge nxm <url>`) reach an already-running app without objc glue.
+/// `concierge-cli nxm <url>`) reach an already-running app without objc glue.
 #[must_use]
 pub fn nxm_inbox_path() -> std::path::PathBuf {
     concierge_platform::data_dir()

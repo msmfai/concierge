@@ -17,6 +17,10 @@
 mod diag;
 mod downloads;
 mod terminal;
+// dead_code in the test cfg only: kittest can't build an OS tray (main-thread
+// menus), so the test build never calls ensure_built.
+#[cfg_attr(test, allow(dead_code))]
+mod tray;
 mod updates;
 
 use std::path::PathBuf;
@@ -181,6 +185,22 @@ const NEXUS_API_ACCESS_URL: &str = "https://www.nexusmods.com/users/myaccount?ta
 /// lives on the daemon; this just says "a window is open".
 const GUI_HEARTBEAT: &str = "concierge-gui";
 
+/// True when argv (minus argv0) is a CLI-style invocation that must forward to
+/// `concierge-cli` — anything non-empty that isn't an nxm:// browser handoff
+/// (those are the one kind of argument the app handles itself).
+fn is_cli_invocation(args: &[String]) -> bool {
+    !args.is_empty() && !args.iter().any(|a| a.starts_with("nxm://"))
+}
+
+/// Run the sibling `concierge-cli` with `args`, inheriting stdio, and return
+/// its exit code — `None` if the CLI isn't next to this exe.
+fn forward_to_cli(args: &[String]) -> Option<i32> {
+    let exe = concierge_daemon::sibling_exe("concierge-cli")?;
+    diag::log(&format!("cli forward: {} {args:?}", exe.display()));
+    let status = std::process::Command::new(exe).args(args).status().ok()?;
+    Some(status.code().unwrap_or(1))
+}
+
 fn main() -> eframe::Result {
     // Surfaces wgpu/winit diagnostics when RUST_LOG is set (e.g.
     // RUST_LOG=wgpu_core=info,wgpu_hal=info); silent otherwise.
@@ -188,6 +208,24 @@ fn main() -> eframe::Result {
     // A GUI app has no console on Windows, so also log to a file beside the exe
     // (see diag) — that's how a failed terminal spawn becomes readable.
     diag::start_session();
+    // This binary is the user-facing `concierge`: launched bare it opens the
+    // GUI (and brings up the daemon below). But the agent CLI historically
+    // shared the name, and provisioned profiles say `concierge-cli eval/fetch/…`
+    // (CLAUDE.md is written only-if-absent), so CLI-style args forward to the
+    // sibling `concierge-cli` instead of opening a window. nxm:// urls are not
+    // CLI args — they're the browser handoff, handled further down.
+    let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    if is_cli_invocation(&cli_args) {
+        if let Some(code) = forward_to_cli(&cli_args) {
+            std::process::exit(code);
+        }
+        diag::log("cli forward: concierge-cli not found beside this exe");
+        eprintln!(
+            "concierge: this is the GUI; the command-line tool is `concierge-cli` \
+             (not found beside this executable)"
+        );
+        std::process::exit(1);
+    }
     // Route core-crate diagnostics (every open_url, every fetch decision) into
     // the SAME file log as the GUI's own events, so the whole sequence is in one
     // place — e.g. a browser open from the fetch path is captured, not just the
@@ -236,20 +274,42 @@ fn main() -> eframe::Result {
             ),
         }
     }
-    // Mark that a GUI window is open, so the daemon's nxm handler doesn't launch
-    // a second one (and the fallback above can hand off to us).
-    concierge_platform::start_heartbeat(GUI_HEARTBEAT);
-    // Bring up the background download daemon (spawn it, or connect to a running
-    // one). If it's live, install a download sink so the byte-fetch runs IN the
-    // daemon process — a download then keeps going while the GUI window is hidden
-    // to the tray. If the daemon can't be reached, downloads run in-process
-    // exactly as before, so this never breaks downloading.
-    if concierge_daemon::spawn_or_connect().is_some() {
-        install_daemon_download_sink();
+    // Vortex-style single instance: a bare launch while a Concierge window is
+    // already live doesn't open a second window — it asks the running instance
+    // to show itself (the user likely forgot it's hidden to the tray) and exits.
+    if nxm_urls.is_empty() {
+        if let Some(age) = concierge_platform::heartbeat_age(GUI_HEARTBEAT) {
+            if age < 6 {
+                diag::log(&format!(
+                    "single-instance: live Concierge found (heartbeat {age}s old) — raising it, exiting"
+                ));
+                concierge_daemon::request_gui_show();
+                return Ok(());
+            }
+        }
     }
-    // Drop any stale "quit" marker from a previous session so it can't
-    // immediately close this fresh window (only a Quit clicked THIS session should).
+    // Mark that a GUI window is open, so a second launch (or an old daemon's nxm
+    // handler) hands off to us instead of opening another window.
+    concierge_platform::start_heartbeat(GUI_HEARTBEAT);
+    // Host the download service in THIS process (the Vortex model: one process
+    // owns window, tray, queue, and socket — quitting it stops everything).
+    // If another process already owns the socket (an old registered daemon
+    // answered an nxm click before we launched), route downloads to it instead —
+    // same UX, the bytes just land over there until it quits.
+    if concierge_daemon::Client.is_alive() {
+        diag::log("download service: an external daemon owns the socket — routing to it");
+        install_daemon_download_sink();
+    } else {
+        std::thread::spawn(|| {
+            if let Err(e) = concierge_daemon::serve() {
+                concierge_platform::diag(&format!("in-process download service: {e}"));
+            }
+        });
+    }
+    // Drop any stale "quit"/"show" markers from a previous session so they can't
+    // close or pop this fresh window (only requests made THIS session should).
     concierge_daemon::clear_quit_request();
+    let _ = concierge_daemon::take_show_request();
     // Render with wgpu, targeting each platform's native graphics API. The
     // default glow/OpenGL path fails on setups without a modern WGL/GL context
     // (older Intel drivers, VMs, remote desktop, Wine), so it isn't a reliable
@@ -307,14 +367,20 @@ fn main() -> eframe::Result {
             });
         });
     }
-    eframe::run_native(
+    let result = eframe::run_native(
         "Concierge",
         native_options,
         Box::new(|cc| {
             install_fonts(&cc.egui_ctx);
             Ok(Box::new(App::new()))
         }),
-    )
+    );
+    // One process owns everything (Vortex model): on the way out, clear our
+    // liveness markers so nothing briefly mistakes the gone process for a live
+    // window or download service.
+    let _ = std::fs::remove_file(concierge_platform::heartbeat_path(GUI_HEARTBEAT));
+    concierge_daemon::clear_service_liveness();
+    result
 }
 
 /// Install the daemon download sink: forward each byte-fetch to the running
@@ -579,11 +645,15 @@ struct App {
     /// When true, the download queue is read from and controlled via the daemon
     /// over IPC; when false, everything falls back to the in-process manager.
     daemon: bool,
-    /// Viewport changes requested by the `show_window` / `quit` actions (the
-    /// daemon's tray drives `quit` via a marker file; an agent may drive either).
-    /// Applied in `update_ctx`, which holds the `ctx`.
+    /// Viewport changes requested by the `show_window` / `quit` actions, the
+    /// in-app tray, or a second launch's show marker. Applied in `update_ctx`,
+    /// which holds the `ctx`.
     pending_show: bool,
     pending_quit: bool,
+    /// The in-app system-tray icon (built on the first frame, polled per frame).
+    tray: tray::Tray,
+    /// Whether the window is currently shown — drives the tray click's toggle.
+    window_visible: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -709,11 +779,15 @@ impl App {
             browse_refresh: Arc::new(AtomicBool::new(false)),
             mutable: true,
             confirm: None,
-            // A live check: the daemon was already spawned in `main`, so this is
-            // one fast socket round-trip. If it's down we use the in-process path.
+            // A live check: `main` either started the in-process service or found
+            // an external daemon on the socket, so this is one fast round-trip.
+            // False just means our serve-thread hasn't bound yet — the in-process
+            // manager path it selects is the same queue in the same process.
             daemon: concierge_daemon::Client.is_alive(),
             pending_show: false,
             pending_quit: false,
+            tray: tray::Tray::default(),
+            window_visible: true,
         };
         if app.daemon {
             let _ = app
@@ -2274,7 +2348,7 @@ fn run_blocking(
             }
         }
         Action::Launch => {
-            // Translate the CLI-flavoured NoInstance ("run `concierge realize`")
+            // Translate the CLI-flavoured NoInstance ("run `concierge-cli realize`")
             // into the GUI's own verb: Apply. i4c2 hit "Play fails by telling me
             // to run a CLI command".
             let info = concierge::launch::launch(plan).map_err(|e| {
@@ -2536,7 +2610,7 @@ fn ago(epoch: u64) -> String {
 
 /// Record an "ok" audit verdict for a browser-added mod (its id came from the
 /// catalog, so it's verified by construction). Merges into state/audit.json —
-/// the same record `concierge audit` writes and `eval`/`realize` read.
+/// the same record `concierge-cli audit` writes and `eval`/`realize` read.
 fn record_audit_ok(repo: &Repo, mod_id: u64, name: &str) {
     let path = repo.state_dir().join("audit.json");
     let mut obj = std::fs::read_to_string(&path)
@@ -2723,16 +2797,53 @@ impl App {
     /// without an `eframe::Frame`. (visual-testing dossier item 2)
     fn update_ctx(&mut self, ctx: &eframe::egui::Context) {
         use eframe::egui;
-        // The daemon owns the tray now; its "Quit" asks any GUI to exit via a
-        // marker file. Consume it and close.
+        // Compat: an old standalone daemon's tray "Quit" asks any GUI to exit
+        // via a marker file. Consume it and close.
         if concierge_daemon::take_quit_request() {
             diag::log("daemon: quit requested — closing window");
             self.pending_quit = true;
         }
-        // Apply the `show_window` / `quit` actions (dispatch_intent set the flags;
-        // only here do we hold `ctx` to issue the viewport commands).
+        // The in-app tray (Vortex model): built on the first frame (the OS event
+        // loop is live by then), drained every frame. A click toggles the window;
+        // Quit ends the whole app — window, queue, and socket service together.
+        // Skipped under test: muda menus may only be created on the MAIN thread,
+        // and kittest drives update from harness threads — an OS tray icon is
+        // untestable headless anyway.
+        #[cfg(not(test))]
+        self.tray.ensure_built();
+        for action in self.tray.poll() {
+            match action {
+                tray::Action::Show => self.pending_show = true,
+                tray::Action::Toggle => {
+                    if self.window_visible {
+                        diag::log("tray: click — hiding window (downloads keep running)");
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                        self.window_visible = false;
+                    } else {
+                        self.pending_show = true;
+                    }
+                }
+                tray::Action::Quit => {
+                    diag::log("tray: Quit — stopping everything");
+                    self.pending_quit = true;
+                }
+            }
+        }
+        // A second bare `concierge` launch asks us to show ourselves instead of
+        // opening a second window (single instance, Vortex-style).
+        if concierge_daemon::take_show_request() {
+            diag::log("single-instance: show requested by a second launch");
+            self.pending_show = true;
+        }
+        // Apply the `show_window` / `quit` actions (dispatch_intent, the tray, or
+        // a show marker set the flags; only here do we hold `ctx` to issue the
+        // viewport commands). Show un-hides and restores, not just focuses — it
+        // serves the tray toggle and the second-launch raise.
         if std::mem::take(&mut self.pending_show) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.window_visible = true;
         }
         if self.pending_quit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2753,10 +2864,12 @@ impl App {
             self.diag_minimized = minimized;
         }
         if close_req {
-            // The GUI is ephemeral now: closing the window just quits it. The
-            // daemon (with the tray) keeps running and downloading; reopen from
-            // the tray's "Open Concierge".
-            diag::log("window: close requested — quitting (daemon keeps running in the tray)");
+            // Vortex model: closing the window quits the whole app — downloads
+            // stop with it. Hiding to the tray (icon click) is the way to keep
+            // the queue running without a window.
+            diag::log(
+                "window: close requested — quitting Concierge (tray-hide keeps downloads running)",
+            );
         }
         if self.download_session_open != self.diag_popup_open {
             diag::log(&format!(
@@ -2770,7 +2883,7 @@ impl App {
             self.diag_popup_open = self.download_session_open;
         }
         // nxm handoff: pin any links dropped in the inbox (browser download /
-        // `concierge nxm <url>` reaching this running instance). Poll ~1/s even
+        // `concierge-cli nxm <url>` reaching this running instance). Poll ~1/s even
         // when idle so a launcher-handed-off download appears promptly.
         let inbox = concierge::nexus::drain_nxm_inbox();
         if !inbox.is_empty() {
@@ -3642,11 +3755,11 @@ impl App {
 
     /// Register the nxm:// protocol handler (the `enable_1click` action).
     fn enable_1click(&mut self) {
-        // Register the DAEMON as the nxm:// handler so a browser one-click lands
-        // in the always-on background service (it queues the download + ensures a
-        // GUI is up), never a second window. Fall back to the GUI itself if the
-        // daemon binary isn't beside us (e.g. a dev run of just the GUI).
-        let handler = concierge_daemon::daemon_exe().or_else(|| std::env::current_exe().ok());
+        // Register THIS exe as the nxm:// handler — exactly Vortex's model: the
+        // app is the handler. A one-click launch with a live instance hands the
+        // url off via the inbox + heartbeat (see `main`) and exits, never a
+        // second window; with no instance running it becomes the app.
+        let handler = std::env::current_exe().ok();
         match handler {
             Some(exe) => match concierge_platform::register_nxm_handler(&exe) {
                 Ok(msg) => self.notice = Some(msg),
@@ -5795,7 +5908,30 @@ impl App {
     clippy::as_conversions
 )]
 mod tests {
-    use super::{order_delta_lines, preferred_adapter, sync_bar};
+    use super::{is_cli_invocation, order_delta_lines, preferred_adapter, sync_bar};
+
+    /// `concierge` is the app: bare launch opens the GUI, nxm:// urls are the
+    /// browser handoff, and anything else forwards to `concierge-cli` — old
+    /// agent profiles say `concierge eval` and must reach the CLI, never a
+    /// GUI window.
+    #[test]
+    fn cli_style_args_forward_but_bare_and_nxm_launches_do_not() {
+        let args = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(!is_cli_invocation(&args(&[])), "bare launch opens the GUI");
+        assert!(
+            !is_cli_invocation(&args(&["nxm://fallout4/mods/1/files/2?key=k"])),
+            "browser handoff stays in the app"
+        );
+        assert!(
+            is_cli_invocation(&args(&["eval"])),
+            "CLI subcommand forwards"
+        );
+        assert!(is_cli_invocation(&args(&["--help"])), "flags forward");
+        assert!(
+            !is_cli_invocation(&args(&["nxm://x", "eval"])),
+            "anything carrying an nxm url is a handoff, not a CLI call"
+        );
+    }
 
     // A hermetic App showing a Fallout 4 pack: two data mods + F4SE (a promoted
     // tool, install_root = "game"). No disk/network — manifest + plan seeded

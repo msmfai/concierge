@@ -95,7 +95,7 @@ fn fomod_installs_only_the_selected_files() {
     )
     .unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_concierge"))
+    let out = Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
         .arg("realize")
         .env("CONCIERGE_REPO", &profile)
         .output()
@@ -190,7 +190,7 @@ fn fomod_select_naming_a_nonexistent_option_fails_loudly() {
     )
     .unwrap();
 
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_concierge"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
         .arg("realize")
         .env("CONCIERGE_REPO", &profile)
         .output()

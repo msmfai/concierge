@@ -1,7 +1,7 @@
 //! Quick-action shortcuts for the UI.
 //!
 //! The GUI's agent view is an embedded terminal running the user's real
-//! interactive agent, sandboxed by `concierge shell` — never a bespoke
+//! interactive agent, sandboxed by `concierge-cli shell` — never a bespoke
 //! headless chat loop, which would hide permission denials from the transcript
 //! and degrade the model to guessing.
 //!

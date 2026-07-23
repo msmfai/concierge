@@ -55,7 +55,7 @@ pub mod adapter {
                  - **Mods are jars under `mods/`, no load order** — the loader resolves \
                  dependencies. Fabric mods usually also need **Fabric API**; Quilt needs **QSL** — \
                  include the API mod for the loader you chose.\n\
-                 - **The catalog is Modrinth** (open, no key): `concierge browse` and `concierge \
+                 - **The catalog is Modrinth** (open, no key): `concierge-cli browse` and `concierge \
                  modrinth <slug>` resolve free CDN downloads. CurseForge is the other major host and \
                  needs its own flow.\n\
                  - **Keep every mod on one game version.** A pack mixing e.g. 1.20.1 and 1.21 jars \

@@ -1,4 +1,4 @@
-//! `concierge launch --check` parses the script-extender log — loaded plugins
+//! `concierge-cli launch --check` parses the script-extender log — loaded plugins
 //! vs incompatible ones — instead of launching. The automated "weird dll bug".
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -43,7 +43,7 @@ fn launch_check_parses_the_script_extender_log() {
     )
     .unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_concierge"))
+    let out = Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
         .args(["launch", "--check"])
         .env("CONCIERGE_REPO", &profile)
         .output()

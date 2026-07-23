@@ -86,7 +86,7 @@ fn setup_vanilla_inventories() {
             continue;
         }
         if game_dir.join("vanilla-inventory.tsv").exists() {
-            println!("{name}: inventory already present — kept (re-bless via `concierge inventory --force`)");
+            println!("{name}: inventory already present — kept (re-bless via `concierge-cli inventory --force`)");
             continue;
         }
         let profile = profiles(&game_dir).into_iter().next().unwrap();

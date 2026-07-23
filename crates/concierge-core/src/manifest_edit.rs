@@ -37,7 +37,7 @@ fn write_atomic(path: &Path, content: &str) -> Result<()> {
     // here — the one chokepoint all editors go through.
     if std::fs::metadata(path).is_ok_and(|m| m.permissions().readonly()) {
         return Err(Error::Other(format!(
-            "profile is LOCKED (manifest read-only): {} — unlock with `concierge unlock` (or the GUI lock toggle)",
+            "profile is LOCKED (manifest read-only): {} — unlock with `concierge-cli unlock` (or the GUI lock toggle)",
             path.display()
         )));
     }

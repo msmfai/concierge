@@ -25,8 +25,8 @@ fn agent_guide_speaks_the_games_modding_norms() {
         "generic guide kept"
     );
     assert!(
-        guide.contains("concierge realize"),
-        "command semantics kept"
+        guide.contains("concierge-cli realize"),
+        "command semantics kept (agent CLI name)"
     );
 
     // …and the Fallout 4 adapter's own norms are appended under a game heading.

@@ -1,5 +1,5 @@
 # On-demand Windows build for iterating on Windows-only issues without cutting a
-# release. Produces a zip of concierge.exe + concierge-gui.exe as a workflow
+# release. Produces a zip of concierge.exe (the GUI) + concierge-cli.exe as a workflow
 # artifact (download with `gh run download`). The dev toolchain has no Windows
 # target, so this is how a Windows build gets produced from a macOS dev machine.
 name: Windows build (manual)
@@ -26,7 +26,10 @@ jobs:
         run: |
           $name = "concierge-windows-dev"
           New-Item -ItemType Directory -Path $name | Out-Null
-          Copy-Item target/release/concierge.exe, target/release/concierge-gui.exe, target/release/concierge-daemon.exe, LICENSE, README.md $name/
+          # concierge.exe IS the GUI; concierge-cli.exe is the agent CLI. The
+          # concierge-gui.exe copy keeps pre-rename installs updatable.
+          Copy-Item target/release/concierge.exe, target/release/concierge-cli.exe, target/release/concierge-daemon.exe, LICENSE, README.md $name/
+          Copy-Item target/release/concierge.exe $name/concierge-gui.exe
           Compress-Archive -Path $name -DestinationPath "$name.zip"
       - uses: actions/upload-artifact@v4
         with:

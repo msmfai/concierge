@@ -1,4 +1,4 @@
-//! `concierge audit` end-to-end against a fixture catalog.
+//! `concierge-cli audit` end-to-end against a fixture catalog.
 //! Hermetic: temp workspace, seeded `SQLite` catalog, parked (disabled,
 //! unresolved) entries — the exact shape an agent's unverified suggestions
 //! take. No network, no gate env var.
@@ -16,7 +16,7 @@ use std::process::Command;
 use concierge_db::catalog::{Catalog, Row};
 
 fn run(profile: &Path, args: &[&str]) -> (bool, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_concierge"))
+    let out = Command::new(env!("CARGO_BIN_EXE_concierge-cli"))
         .args(args)
         .env("CONCIERGE_REPO", profile)
         .output()

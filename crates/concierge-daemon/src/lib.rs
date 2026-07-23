@@ -20,7 +20,7 @@
 //! and one response per connection; clients reconnect per call.
 
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use concierge::download_manager::{DownloadManager, JobView};
 use interprocess::local_socket::prelude::*;
@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 /// The system-tray icon + its host event loop (macOS/Windows only).
 #[cfg(any(target_os = "macos", windows))]
-mod tray;
+pub mod tray;
 
 /// This build's version, returned by [`Request::Ping`] so a client can tell a
 /// stale daemon from a fresh one before handing work to it.
@@ -264,6 +264,11 @@ pub fn serve() -> io::Result<()> {
 #[must_use]
 pub fn sibling_exe(stem: &str) -> Option<PathBuf> {
     let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    exe_in(&dir, stem)
+}
+
+/// `stem` (`stem.exe` on Windows) inside `dir`, if present.
+fn exe_in(dir: &Path, stem: &str) -> Option<PathBuf> {
     let name = if cfg!(windows) {
         format!("{stem}.exe")
     } else {
@@ -345,9 +350,29 @@ pub fn handoff_nxm(urls: &[String]) {
 pub fn ensure_gui() {
     if concierge_platform::heartbeat_age(GUI_HEARTBEAT).is_some_and(|age| age < 6) {
         concierge_platform::diag("daemon: a GUI is already live");
-    } else if let Some(exe) = sibling_exe("concierge-gui") {
+    } else if let Some(exe) = gui_exe() {
         let _ = std::process::Command::new(exe).spawn();
         concierge_platform::diag("daemon: launched a GUI");
+    }
+}
+
+/// The GUI binary next to the current executable. In the current layout the
+/// GUI ships as `concierge` (with `concierge-cli` beside it — that sibling is
+/// the layout discriminator), except inside the macOS .app where it keeps the
+/// `concierge-gui` name (the launcher script owns `Concierge`, which on a
+/// case-insensitive filesystem is the same name). In the pre-rename layout
+/// `concierge` was the CLI and the GUI was `concierge-gui`.
+fn gui_exe() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    gui_exe_in(&dir)
+}
+
+/// [`gui_exe`] on an explicit directory (unit-testable).
+fn gui_exe_in(dir: &Path) -> Option<PathBuf> {
+    if exe_in(dir, "concierge-cli").is_some() {
+        exe_in(dir, "concierge").or_else(|| exe_in(dir, "concierge-gui"))
+    } else {
+        exe_in(dir, "concierge-gui")
     }
 }
 
@@ -384,6 +409,41 @@ pub fn take_quit_request() -> bool {
     } else {
         false
     }
+}
+
+/// Where a second bare `concierge` launch leaves a "show yourself" marker for
+/// the live GUI (Vortex-style single instance: relaunching raises the existing
+/// window instead of opening a second one).
+fn show_marker_path() -> PathBuf {
+    concierge_platform::config_dir().join("concierge.show")
+}
+
+/// Ask the live GUI to un-hide/restore/focus its window. Only drops the marker
+/// when a GUI is actually live, so a stale marker can't pop the *next* GUI.
+pub fn request_gui_show() {
+    if concierge_platform::heartbeat_age(GUI_HEARTBEAT).is_some_and(|age| age < 6) {
+        let _ = std::fs::write(show_marker_path(), "1");
+    }
+}
+
+/// The GUI polls this each frame (and clears it once at startup): consume a
+/// pending show request, if any.
+#[must_use]
+pub fn take_show_request() -> bool {
+    let path = show_marker_path();
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+        true
+    } else {
+        false
+    }
+}
+
+/// Remove the download-service liveness marker. The GUI — which hosts the
+/// service in-process — calls this as it exits, so nothing briefly mistakes
+/// the gone process for a live service.
+pub fn clear_service_liveness() {
+    let _ = std::fs::remove_file(concierge_platform::heartbeat_path(DAEMON_HEARTBEAT));
 }
 
 /// Run the daemon **service**: the socket server + heartbeat, plus — on
@@ -538,6 +598,56 @@ fn unexpected(resp: &Response) -> io::Error {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// `gui_exe_in` must pick the right binary in every install layout the
+    /// transition can produce: current flat (concierge = GUI, concierge-cli
+    /// beside it), macOS .app internals (concierge-cli + concierge-gui, no
+    /// `concierge` — the launcher script owns that name case-insensitively),
+    /// and pre-rename (concierge-gui = GUI, `concierge` = the old CLI).
+    #[test]
+    fn gui_lookup_matches_every_install_layout() {
+        let exe = |stem: &str| {
+            if cfg!(windows) {
+                format!("{stem}.exe")
+            } else {
+                stem.to_owned()
+            }
+        };
+        let fresh = |tag: &str, names: &[&str]| {
+            let dir = std::env::temp_dir().join(format!("cg-guiexe-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            for n in names {
+                std::fs::write(dir.join(exe(n)), b"x").unwrap();
+            }
+            dir
+        };
+
+        let flat = fresh("flat", &["concierge", "concierge-cli", "concierge-daemon"]);
+        assert_eq!(gui_exe_in(&flat).unwrap(), flat.join(exe("concierge")));
+
+        let app = fresh(
+            "app",
+            &["concierge-gui", "concierge-cli", "concierge-daemon"],
+        );
+        assert_eq!(gui_exe_in(&app).unwrap(), app.join(exe("concierge-gui")));
+
+        let legacy = fresh(
+            "legacy",
+            &["concierge-gui", "concierge", "concierge-daemon"],
+        );
+        assert_eq!(
+            gui_exe_in(&legacy).unwrap(),
+            legacy.join(exe("concierge-gui"))
+        );
+
+        let empty = fresh("empty", &[]);
+        assert!(gui_exe_in(&empty).is_none());
+
+        for d in [flat, app, legacy, empty] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
 
     #[test]
     fn frame_round_trips() {
