@@ -26,11 +26,21 @@ use crate::diag;
 const STATUS_TICK: Duration = Duration::from_secs(1);
 
 /// Inert stand-in where no tray is supported: never yields an action.
+/// (Braced, not a unit struct, so `Tray::default()` at the construction site
+/// lints identically to the real variant's derived Default.)
 #[cfg(not(any(target_os = "macos", windows)))]
 #[derive(Default)]
-pub struct Tray;
+pub struct Tray {}
 
+/// The no-op surface must match the real impl's shape exactly — `&mut self`,
+/// non-const — so the caller compiles unchanged on every platform; allow the
+/// lints that would "improve" it into a different signature.
 #[cfg(not(any(target_os = "macos", windows)))]
+#[allow(
+    clippy::unused_self,
+    clippy::missing_const_for_fn,
+    clippy::needless_pass_by_ref_mut
+)]
 impl Tray {
     pub fn ensure_built(&mut self) {}
 
