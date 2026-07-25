@@ -1045,6 +1045,10 @@ impl App {
             log_tail: self.log.iter().rev().take(5).rev().cloned().collect(),
             order_word: lex.order.to_owned(),
             sort_label: lex.sort_action.to_owned(),
+            game_uses_nexus: self
+                .plan
+                .as_ref()
+                .is_some_and(|p| p.game.nexus_domain.is_some()),
             nxm_input: self.nxm_input.clone(),
             search: self.search.clone(),
             browse_query: self.browse_query.clone(),
@@ -1812,6 +1816,14 @@ impl App {
                 return;
             }
         };
+        // A change to the pack's CONTENTS (add/remove/toggle/reorder) invalidates
+        // any prior "all archives present + pinned — Apply can complete" success
+        // banner: e.g. adding a mod means an archive is now missing. Settings
+        // edits (install folder / DLC / compat) don't, so they keep the banner.
+        let content_edit = matches!(
+            edit,
+            Edit::Toggle(..) | Edit::Nudge(..) | Edit::Move(..) | Edit::Remove(..) | Edit::Add(..)
+        );
         let edited = match edit {
             Edit::Toggle(name, en) => manifest_edit::set_mod_enabled(&text, &name, en),
             Edit::Nudge(name, up) => manifest_edit::nudge_mod(&text, &name, up),
@@ -1831,6 +1843,10 @@ impl App {
                     self.undo.push(text);
                     if self.undo.len() > 30 {
                         self.undo.remove(0);
+                    }
+                    if content_edit {
+                        self.notice = None;
+                        self.warn = None;
                     }
                     self.reload_plan();
                 }
@@ -2835,6 +2851,19 @@ impl App {
             diag::log("single-instance: show requested by a second launch");
             self.pending_show = true;
         }
+        // Escape closes an open modal, reliably — the WM's title-bar X isn't
+        // delivered on some setups (headless/remote), which trapped users in
+        // Browse/Settings. Gated on a modal being open so it never steals Escape
+        // from the agent terminal. Browse is topmost, so it wins.
+        if (self.browse_open || self.settings_open)
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            if self.browse_open {
+                self.browse_open = false;
+            } else {
+                self.settings_open = false;
+            }
+        }
         // Apply the `show_window` / `quit` actions (dispatch_intent, the tray, or
         // a show marker set the flags; only here do we hold `ctx` to issue the
         // viewport commands). Show un-hides and restores, not just focuses — it
@@ -3145,12 +3174,14 @@ impl App {
                     } else {
                         egui::Color32::from_rgb(220, 170, 90)
                     },
+                    // Plain-language lifecycle status — "realized" is internal
+                    // jargon; users think in "installed into the game".
                     if realized.plan_hash.is_none() {
-                        "not realized"
+                        "not installed yet — run Apply"
                     } else if synced {
-                        "declaration realized"
+                        "installed & up to date"
                     } else {
-                        "STALE — declaration changed since last rebuild"
+                        "changed since last Apply — Apply to update"
                     },
                 );
                 if let Some(tr) = self.screen().transitions.iter().find(|t| t.id == "verify").cloned() {
@@ -3257,8 +3288,16 @@ impl App {
                         self.mod_list(ui, &tool_rows, mods.len(), false);
                     }
                     // Surface the download reality by the buttons, not buried in
-                    // the bottom log (T3.7: 14/30 only found it there).
-                    if !mods.is_empty() {
+                    // the bottom log (T3.7: 14/30 only found it there). The
+                    // Premium/free wording and the Wabbajack-style session are
+                    // Nexus concepts — show them ONLY for Nexus games (on
+                    // Modrinth/Minecraft every download is a free direct CDN
+                    // fetch, so this note is confusing noise there).
+                    let is_nexus_game = self
+                        .plan
+                        .as_ref()
+                        .is_some_and(|p| p.game.nexus_domain.is_some());
+                    if !mods.is_empty() && is_nexus_game {
                         ui.horizontal(|ui| {
                             ui.small(
                                 "Downloads: Premium fetches automatically; free accounts click \
@@ -3421,7 +3460,11 @@ impl App {
             self.apply(edit);
         }
 
-        if busy || self.browse_busy || self.term.as_ref().is_some_and(|t| !t.finished()) {
+        // Catalog sync no longer sets `busy`, so key its repaint off its own
+        // progress flag — otherwise the spinner/progress line would stall.
+        let syncing = self.sync_progress.lock().is_ok_and(|g| g.is_some());
+        if busy || syncing || self.browse_busy || self.term.as_ref().is_some_and(|t| !t.finished())
+        {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
     }
@@ -3457,10 +3500,28 @@ impl App {
                 .with_title("How to use Concierge")
                 .with_inner_size([580.0, 660.0]),
             |ctx, _class| {
-                if ctx.input(|i| i.viewport().close_requested()) {
+                // Close on the WM's X, on Escape, AND via an explicit in-app
+                // button below — never depend on just one. Some window managers
+                // (and headless/remote setups) don't deliver the title-bar X as
+                // close_requested, which left users trapped on the guide.
+                if ctx.input(|i| i.viewport().close_requested())
+                    || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+                {
                     close = true;
                 }
                 egui::CentralPanel::default().show(ctx, |ui| {
+                    // Always-visible close control, pinned above the scroll area
+                    // so it can't be scrolled off or hidden behind a dead X.
+                    ui.horizontal(|ui| {
+                        // Routed through the view-model (the guide only renders
+                        // while open, so toggle closes it) — keeps the two-view
+                        // split intact per the no-drift guard.
+                        if ui.button("\u{2715} Close guide").clicked() {
+                            self.dispatch_intent("toggle_quickstart");
+                        }
+                        ui.weak("(or press Esc)");
+                    });
+                    ui.separator();
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         ui.label(
                     "Concierge builds a modded COPY of your game from a text modpack — your \
@@ -3542,6 +3603,12 @@ impl App {
                         ui.label(
                     "• Undo / roll back — every change is reversible; Uninstall removes everything \
                      Concierge placed.",
+                );
+                        ui.label(
+                    "• Portable — your whole setup IS one text file (manifest.toml in the pack \
+                     folder). Copy it to another PC to rebuild the same pack, or from the command \
+                     line: `concierge-cli export-pack <file>` to save it and `import-pack <file> \
+                     <name>` to restore it.",
                 );
 
                         ui.add_space(10.0);
@@ -5387,18 +5454,18 @@ impl App {
     }
 
     fn sync_catalog(&self, domain: String, modrinth: bool) {
-        if self.busy.swap(true, Ordering::SeqCst) {
-            return;
+        // The catalog sync is a long, READ-ONLY background download — it must NOT
+        // take the global `busy` lock that gates mutating actions, or a
+        // multi-minute sync greys out Download/Apply/etc. the whole time even
+        // though they're independent of the catalog. Its own `sync_progress` is
+        // both the concurrency guard AND the spinner source.
+        if self.sync_progress.lock().is_ok_and(|g| g.is_some()) {
+            return; // a sync is already running
         }
         let Some(repo) = self.active_repo() else {
-            self.busy.store(false, Ordering::SeqCst);
             return;
         };
-        let (tx, busy, refresh) = (
-            self.log_tx.clone(),
-            Arc::clone(&self.busy),
-            Arc::clone(&self.browse_refresh),
-        );
+        let (tx, refresh) = (self.log_tx.clone(), Arc::clone(&self.browse_refresh));
         let prog = Arc::clone(&self.sync_progress);
         let started = Arc::clone(&self.sync_started);
         let set_prog = |g: &Arc<std::sync::Mutex<Option<String>>>, v: Option<String>| {
@@ -5455,7 +5522,6 @@ impl App {
             if let Ok(mut s) = started.lock() {
                 *s = None;
             }
-            busy.store(false, Ordering::SeqCst);
         });
     }
 
@@ -5787,7 +5853,7 @@ impl App {
             ui.label(mod_source(m));
             ui.end_row();
             if let Some(id) = m.nexus_mod_id {
-                ui.label("nexus");
+                ui.label("nexus (mod / file)");
                 ui.label(format!("{id} / {}", m.nexus_file_id.unwrap_or(0)));
                 ui.end_row();
             }
@@ -5796,19 +5862,24 @@ impl App {
                 ui.label(u);
                 ui.end_row();
             }
-            ui.label("md5");
+            // "checksum" not "md5", and plain language for the empty state — a
+            // beginner shouldn't have to know what UNPINNED means. It fills in
+            // automatically the first time the archive is downloaded.
+            ui.label("checksum");
             ui.label(if m.md5.is_empty() {
-                "UNPINNED".to_owned()
+                "not set yet (fills in on download)".to_owned()
             } else {
                 m.md5.clone()
             });
             ui.end_row();
-            ui.label("files");
-            ui.label(
-                per_mod
-                    .get(&m.name)
-                    .map_or_else(|| "not deployed".to_owned(), |c| format!("{c} deployed")),
-            );
+            // "installed" = deployed into the game by Apply — a SEPARATE step
+            // from downloading. Say "run Apply" so "not installed" can't be
+            // misread as "the download failed".
+            ui.label("installed");
+            ui.label(per_mod.get(&m.name).map_or_else(
+                || "not yet — run Apply to install".to_owned(),
+                |c| format!("{c} files installed"),
+            ));
             ui.end_row();
         });
         // This mod's declared requirements (framework/script-extender/other) —

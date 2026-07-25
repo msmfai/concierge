@@ -448,6 +448,9 @@ pub struct UiFacts {
     pub order_word: String,
     /// The active game's sort-action label ("Sort load order"…).
     pub sort_label: String,
+    /// Whether the active game's mods come from Nexus — gates Nexus-only UI
+    /// (the `nxm://` link field) so it doesn't surface on Modrinth/Minecraft.
+    pub game_uses_nexus: bool,
     pub nxm_input: String,
     pub search: String,
     pub browse_query: String,
@@ -940,20 +943,24 @@ pub fn transitions(f: &UiFacts, state: UiState) -> Vec<Transition> {
         )))
         .collect(),
         UiState::Browse => {
-            let nxm_ok = f.mutable && f.nxm_input.starts_with("nxm://");
-            let nxm_guard = if !f.mutable {
-                Some(LOCKED)
-            } else if !f.nxm_input.starts_with("nxm://") {
-                Some("paste an nxm:// link")
-            } else {
-                None
-            };
             let mut v = vec![
                 t(Intent::BrowseSearch, "search", true, None),
-                t(Intent::NxmAdd, "add nxm", nxm_ok, nxm_guard),
                 t(Intent::BrowseClear, "clear filters", true, None),
                 t(Intent::SyncCatalog, "sync catalog", true, None),
             ];
+            // `add nxm` is a Nexus-only handoff — only offer it for Nexus games
+            // (on Modrinth every add is a free catalog "+ Add to pack").
+            if f.game_uses_nexus {
+                let nxm_ok = f.mutable && f.nxm_input.starts_with("nxm://");
+                let nxm_guard = if !f.mutable {
+                    Some(LOCKED)
+                } else if !f.nxm_input.starts_with("nxm://") {
+                    Some("paste an nxm:// link")
+                } else {
+                    None
+                };
+                v.insert(1, t(Intent::NxmAdd, "add nxm", nxm_ok, nxm_guard));
+            }
             v.push(raw("browse_cat:", "category: all", true, None));
             for c in &f.browse_categories {
                 v.push(raw(
@@ -1106,7 +1113,9 @@ pub fn build_screen(f: &UiFacts) -> Screen {
             value: f.browse_query.clone(),
         });
     }
-    if matches!(state, UiState::Browse) || !f.nxm_input.is_empty() {
+    // The `nxm://` link is a Nexus-only handoff — offer it only for Nexus games
+    // (still show it if a link is mid-entry, so nothing is lost on a game switch).
+    if (matches!(state, UiState::Browse) && f.game_uses_nexus) || !f.nxm_input.is_empty() {
         fields.push(Field {
             id: "nxm_input".into(),
             label: "nxm:// link".into(),
@@ -1532,6 +1541,7 @@ mod tests {
         let states: Vec<UiFacts> = {
             let mut base = base_facts();
             base.has_catalog = true;
+            base.game_uses_nexus = true; // so the Nexus-only `add nxm` projects
             base.browse_categories = vec!["Gameplay".into()];
             base.browse_sorts = vec!["downloads".into()];
             base.browse_hits = vec![BrowseHit {

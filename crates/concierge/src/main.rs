@@ -1946,6 +1946,11 @@ fn run() -> Result<()> {
             let loader = manifest.compat.loader.as_deref();
             let r = concierge_db::modrinth::resolve(&project, gv, loader)
                 .map_err(|e| Error::Other(e.to_string()))?;
+            // Record WHICH game version + loader this resolve targeted, so the
+            // pick isn't invisible/unreviewable in the manifest (only set if the
+            // pack doesn't already pin them).
+            let resolved_gv = r.game_version.clone();
+            let resolved_loader = r.loader.clone();
             println!(
                 "  resolved {project} {} → {} (free: {})",
                 r.version_number, r.filename, r.url
@@ -1961,13 +1966,37 @@ fn run() -> Result<()> {
                 source: concierge::manifest_edit::NewSource::Url(r.url),
                 md5: String::new(),
                 file: r.filename,
+                // "data" is the omit-sentinel (add_mod drops it), so the game's
+                // DEFAULT root applies — `mods/` for Minecraft. The jar deploys
+                // whole there (build.rs), landing as `mods/<file>.jar`.
                 install_root: "data".to_owned(),
                 plugins: Vec::new(),
             };
             let new = concierge::manifest_edit::add_mod(&text, &entry)
                 .map_err(|e| Error::Other(e.to_string()))?;
+            let new = if manifest.compat.game_version.is_none() && manifest.compat.loader.is_none()
+            {
+                match concierge::manifest_edit::set_compat(
+                    &new,
+                    resolved_gv.as_deref().unwrap_or(""),
+                    resolved_loader.as_deref().unwrap_or(""),
+                ) {
+                    Ok(withc) => {
+                        if let (Some(g), Some(l)) = (&resolved_gv, &resolved_loader) {
+                            println!("  pinned [compat] game_version = {g}, loader = {l}");
+                        }
+                        withc
+                    }
+                    Err(_) => new,
+                }
+            } else {
+                new
+            };
             std::fs::write(&path, new).map_err(|e| Error::Other(format!("write: {e}")))?;
-            println!("  added '{project}' from Modrinth — run `download` to fetch it (free).");
+            println!(
+                "  added '{project}' from Modrinth — run `concierge-cli fetch` to download it \
+                 (free; md5 is pinned on first fetch)."
+            );
         }
         Cmd::ExportPack { dest } => {
             let src = repo.profile.join("manifest.toml");

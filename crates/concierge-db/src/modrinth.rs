@@ -123,6 +123,11 @@ pub struct Resolved {
     pub sha512: String,
     pub size: u64,
     pub version_number: String,
+    /// The chosen version's target game version + loader (first of each), so an
+    /// unfiltered resolve records WHY it picked this build — reviewable in the
+    /// manifest instead of appearing out of thin air.
+    pub game_version: Option<String>,
+    pub loader: Option<String>,
 }
 
 /// Fetch every published version of a project (by slug or id).
@@ -169,6 +174,12 @@ pub fn pick_file(
         sha512: f.hashes.sha512.clone(),
         size: f.size,
         version_number: v.version_number.clone(),
+        game_version: game_version
+            .map(str::to_owned)
+            .or_else(|| v.game_versions.first().cloned()),
+        loader: loader
+            .map(str::to_owned)
+            .or_else(|| v.loaders.first().cloned()),
     })
 }
 

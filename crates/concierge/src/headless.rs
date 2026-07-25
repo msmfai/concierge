@@ -244,6 +244,11 @@ impl Headless {
             // loaded. Keeps the projected action guards identical across renderers.
             has_active_profile: self.profile.is_some() && self.game_kind.is_some(),
             is_bethesda: self.is_bethesda,
+            game_uses_nexus: self
+                .game_kind
+                .as_deref()
+                .and_then(concierge::game::try_adapter)
+                .is_some_and(|a| a.nexus_domain().is_some()),
             has_catalog: self.has_catalog,
             tab: TabFacts(self.tab),
             mutable: self.mutable,

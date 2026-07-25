@@ -18,6 +18,7 @@ fn base() -> UiFacts {
         has_catalog: true,
         tab: TabFacts(concierge_ui::Tab::Setup),
         mutable: true,
+        game_uses_nexus: true, // skyrimse mods come from Nexus
         order_word: "load order".into(),
         sort_label: "Sort load order".into(),
         mods: vec![
@@ -120,6 +121,28 @@ fn browse_golden() {
         },
     ];
     golden("browse", &f);
+}
+
+#[test]
+fn nxm_field_is_nexus_only() {
+    use concierge_ui::{build_screen, render_text};
+    // Nexus game in Browse: the nxm:// link field is offered.
+    let mut nexus = base();
+    nexus.browse_open = true;
+    nexus.game_uses_nexus = true;
+    assert!(
+        render_text(&build_screen(&nexus)).contains("nxm:// link"),
+        "Nexus game should offer the nxm:// link field"
+    );
+    // Modrinth/Minecraft game in Browse: no nxm field (every download is a free
+    // direct CDN fetch — an nxm:// link is meaningless there).
+    let mut modrinth = base();
+    modrinth.browse_open = true;
+    modrinth.game_uses_nexus = false;
+    assert!(
+        !render_text(&build_screen(&modrinth)).contains("nxm:// link"),
+        "non-Nexus game must not surface the nxm:// link field"
+    );
 }
 
 #[test]
